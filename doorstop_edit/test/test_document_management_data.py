@@ -46,6 +46,7 @@ def test_create_document_validates_before_mutating(tmp_path: Path) -> None:
     generate_tree(tmp_path, 1, 1)
     doorstop_data = DoorstopData(None, tmp_path)
     doorstop_data.rebuild(False)
+    entries_before = set(tmp_path.iterdir())
     invalid_prefixes = (
         "",
         "  ",
@@ -68,7 +69,7 @@ def test_create_document_validates_before_mutating(tmp_path: Path) -> None:
     for prefix in invalid_prefixes:
         with pytest.raises(doorstop.DoorstopError):
             doorstop_data.create_document(prefix)
-    assert not (tmp_path / "  ").exists()
+    assert set(tmp_path.iterdir()) == entries_before
 
 
 def test_remove_document_refuses_documents_with_children(doorstop_data: DoorstopData) -> None:
