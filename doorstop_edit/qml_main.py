@@ -2,7 +2,7 @@ import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QCoreApplication, QEvent, QUrl
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication
 
@@ -23,15 +23,22 @@ def main() -> int:
         logging.getLogger("gui").error('Invalid argument: "%s" is not a directory.', root)
         return 0
     app = QApplication(sys.argv[:1])
-    backend = QmlBackend(root=root)
     engine = QQmlApplicationEngine()
+    backend = QmlBackend(parent=engine, root=root)
     engine.rootContext().setContextProperty("backend", backend)
     engine.load(QUrl.fromLocalFile(str(Path(__file__).parent / "qml" / "Main.qml")))
     if not engine.rootObjects():
         backend.shutdown()
+        engine.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         return 1
     app.aboutToQuit.connect(backend.shutdown)
-    return app.exec()
+    exit_code = app.exec()
+    # Dispose the QML bindings before their Python context object is destroyed.
+    engine.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
+    return exit_code
 
 
 if __name__ == "__main__":

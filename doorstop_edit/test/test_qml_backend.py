@@ -1,7 +1,8 @@
 from pathlib import Path
 from typing import Any, cast
 
-from PySide6.QtCore import QCoreApplication, QEvent, QMetaObject, QObject, Qt, QUrl
+from PySide6.QtCore import QCoreApplication, QEvent, QMetaObject, QObject, Qt, QTimer, QUrl, qInstallMessageHandler
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem, QQuickWindow
 from PySide6.QtTest import QTest
@@ -9,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 from pytest import MonkeyPatch
 from pytestqt.qtbot import QtBot
 
+from doorstop_edit import qml_main
 from doorstop_edit.main import create_parser
 from doorstop_edit.qml_backend import QmlBackend
 from tools.gen_sample_tree import generate_tree
@@ -242,3 +244,34 @@ def test_qml_project_open_select_and_save_interaction(qapp: QApplication, tmp_pa
     assert backend.projectRoot == str(tmp_path)
 
     dispose_qml(engine, backend, qapp)
+
+
+def test_qml_main_normal_shutdown_disposes_engine_before_backend(
+    qapp: QApplication, monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    generate_tree(tmp_path, num_docs=1, num_req=1)
+    monkeypatch.setattr(qml_main, "QApplication", lambda _argv: qapp)
+    monkeypatch.setattr("sys.argv", ["doorstop-edit-qml", str(tmp_path)])
+    messages: list[str] = []
+    previous_handler = qInstallMessageHandler(lambda _kind, _context, message: messages.append(message))
+    shutdown_states: list[bool] = []
+    original_shutdown = QmlBackend.shutdown
+
+    def record_shutdown(backend: QmlBackend) -> None:
+        original_shutdown(backend)
+        shutdown_states.append(not backend._data.file_watcher._started)
+
+    monkeypatch.setattr(QmlBackend, "shutdown", record_shutdown)
+
+    def close_qml_window() -> None:
+        for window in QGuiApplication.topLevelWindows():
+            window.close()
+
+    QTimer.singleShot(100, close_qml_window)
+    try:
+        assert qml_main.main() == 0
+    finally:
+        qInstallMessageHandler(previous_handler)
+
+    assert shutdown_states == [True]
+    assert not any("Cannot read property" in message for message in messages)
