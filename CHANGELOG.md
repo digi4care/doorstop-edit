@@ -11,6 +11,9 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Create and safely remove leaf documents from the application.
+
 ## [0.2.0] - 2026-11-05
 
 ### Added
