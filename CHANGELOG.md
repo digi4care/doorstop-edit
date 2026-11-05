@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-05
+
+### Added
+- Background project validation with tree feedback and safe shutdown.
+
 ## [Unreleased]
 
 ## [0.2.0] - 2026-11-05

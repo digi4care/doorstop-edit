@@ -158,15 +158,21 @@ class ItemRenderView(QObject):
         self._view_mode = ItemRenderView.ViewMode.Document
         self._viewed_item: Optional[doorstop.Item] = None
         self._viewed_document: Optional[doorstop.Document] = None
+        self._render_generation = 0
+        self._render_generation_ready = False
 
         self._render_worker = RenderWorker()
         self._render_worker.result_ready.connect(self._on_render_finished)
+        self._render_worker.batch_finished.connect(self._on_render_batch_finished)
         self._render_worker.progress.connect(self._on_render_progress)
 
         web_view.show()  # Render empty view to set backround color.
 
     @time_function("Changing content in HTML view")
     def show(self, item: Optional[doorstop.Item], force_reload: bool = False) -> None:
+        if force_reload or item is None or self._viewed_item is None or item is not self._viewed_item:
+            self._render_generation += 1
+            self._render_generation_ready = False
         self._viewed_item = item
 
         if item is None:
@@ -217,7 +223,12 @@ class ItemRenderView(QObject):
 
         items_to_render: List[doorstop.Item] = []
         for doc_item in self.doorstop_data.iter_items(doc):
-            items_to_render.append(doc_item)
+            if self.doorstop_data.get_item_load_error(str(doc_item.uid)) is None:
+                try:
+                    doc_item.level
+                except (doorstop.DoorstopError, ValueError, AttributeError):
+                    continue
+                items_to_render.append(doc_item)
         items_to_render.sort(key=sort_func)
 
         body = ""
@@ -230,7 +241,9 @@ class ItemRenderView(QObject):
         self.render_progress.emit(percentage)
 
     @Slot(int)
-    def _on_render_finished(self, id: str, content: str) -> None:
+    def _on_render_finished(self, id: str, content: str, generation: int) -> None:
+        if generation != self._render_generation:
+            return
         hide = False
         item = self.doorstop_data.find_item(id)
 
@@ -248,6 +261,11 @@ class ItemRenderView(QObject):
 
         focus = self._viewed_item and id == self._viewed_item.uid.value
         self.html_update_item.emit(id, content, focus, hide)
+
+    @Slot(int)
+    def _on_render_batch_finished(self, generation: int) -> None:
+        if generation == self._render_generation:
+            self._render_generation_ready = True
 
     @Slot()
     def _on_reload(self) -> None:
@@ -270,12 +288,17 @@ class ItemRenderView(QObject):
             return
         items: List[Tuple[doorstop.Item, int]] = []
         for item in self.doorstop_data.iter_items(self._viewed_item.document):
+            if self.doorstop_data.get_item_load_error(str(item.uid)) is not None:
+                continue
             if item.uid.value == self._viewed_item.uid.value:
                 continue  # We will handle this later
             items.append((item, self.doorstop_data.get_last_change(item)))
 
         items.insert(0, (self._viewed_item, self.doorstop_data.get_last_change(self._viewed_item)))
-        self._render_worker.render(items, Path(self._viewed_item.document.path), partial)
+        effective_partial = partial and self._render_generation_ready
+        self._render_worker.render(
+            items, Path(self._viewed_item.document.path), effective_partial, self._render_generation
+        )
 
     @Slot(str)
     def open_item(self, uid: str) -> None:
