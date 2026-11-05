@@ -1,6 +1,6 @@
 [project]
 name = "doorstop-edit"
-version = "0.1.5"
+version = "0.2.0"
 description = "Cross-platform doorstop GUI editor"
 authors = [{name = "Alexander Ernfridsson", email = "ernfridsson@gmail.com"}]
 license = "MIT"

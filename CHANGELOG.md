@@ -6,6 +6,16 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-05
+
+### Added
+
+- Coalesce filesystem events and refresh the item tree after external item-file changes.
+
+### Changed
+
+- Remove externally deleted items from the tree after a successful rebuild.
+
 ## [0.1.5] - 2026-11-05
 
 ### Changed
