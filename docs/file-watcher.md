@@ -24,3 +24,13 @@ using a potentially stale basename for a mixed batch. The watcher skips roots th
 when watches are scheduled and tolerates a root disappearing during scheduling. It does not itself
 guarantee that a deleted root is rediscovered or that a failed application rebuild is retried. Stopping
 cancels pending delivery; `start()` creates a fresh Watchdog observer after a stop, so restart is safe.
+
+## Platform observer
+
+Windows uses Watchdog’s polling observer with a configured 100 ms interval; other
+platforms retain their native observer. Polling compares filesystem snapshots rather
+than receiving native notifications, so it adds periodic filesystem I/O proportional
+to the watched tree. Detection latency includes the polling interval, snapshot scan
+time, event debounce, and application processing; 100 ms is not a hard end-to-end
+limit. The interval is selected to target the documented sub-second refresh behavior.
+Observer replacement on restart uses the same platform-specific selection.

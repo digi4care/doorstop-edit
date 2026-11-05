@@ -1,4 +1,5 @@
 from os import fsdecode
+from os import name as os_name
 from pathlib import Path
 from threading import Condition, Lock, Timer, get_ident
 from typing import Callable, List
@@ -9,14 +10,23 @@ from watchdog.events import (
     FileSystemEventHandler,
 )
 from watchdog.observers import Observer
+from watchdog.observers.api import BaseObserver
+from watchdog.observers.polling import PollingObserver
 
 
 class FileWatcher(FileSystemEventHandler):
     DEBOUNCE_SECONDS = 0.1
+    POLLING_INTERVAL_SECONDS = 0.1
+
+    @classmethod
+    def _new_observer(cls) -> BaseObserver:
+        if os_name == "nt":
+            return PollingObserver(timeout=cls.POLLING_INTERVAL_SECONDS)
+        return Observer()
 
     def __init__(self, on_dir_changed: Callable[[bool, str], None]) -> None:
         self.on_dir_changed = on_dir_changed
-        self.observer = Observer()
+        self.observer = self._new_observer()
         self.scheduled_docs: List[Document] = []
         self._lock = Lock()
         self._delivery_finished = Condition(self._lock)
@@ -34,7 +44,7 @@ class FileWatcher(FileSystemEventHandler):
             return
         restarting = self._stopped
         if restarting:
-            self.observer = Observer()
+            self.observer = self._new_observer()
             self._stopped = False
         self.observer.start()
         self._started = True

@@ -6,9 +6,19 @@ from types import SimpleNamespace
 
 from pytest import MonkeyPatch
 from watchdog.events import FileDeletedEvent, FileModifiedEvent
+from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 
 import doorstop_edit.utils.file_watcher as file_watcher_module
 from doorstop_edit.utils.file_watcher import FileWatcher
+
+
+def test_observer_factory_selects_polling_only_on_windows(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(file_watcher_module, "os_name", "nt")
+    assert isinstance(FileWatcher(lambda *_: None).observer, PollingObserver)
+
+    monkeypatch.setattr(file_watcher_module, "os_name", "posix")
+    assert type(FileWatcher(lambda *_: None).observer) is Observer
 
 
 def test_modified_file_emits_change_signal(tmp_path: Path) -> None:
