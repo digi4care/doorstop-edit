@@ -1,7 +1,7 @@
 import json
 import tempfile
 from pathlib import Path
-from typing import Any, Iterator, cast
+from typing import Any, Iterator, Optional, cast
 from unittest.mock import Mock, patch
 
 import doorstop
@@ -9,9 +9,11 @@ import pytest
 from PySide6.QtCore import Qt
 from pytestqt.qtbot import QtBot
 
+from doorstop_edit import application as application_module
 from doorstop_edit.application import DoorstopEdit, QFileDialog
 from doorstop_edit.conftest import NUM_DOC
 from doorstop_edit.dialogs import ConfirmDialog, InfoDialog
+from doorstop_edit.document_dialog import AddDocumentDialog
 from doorstop_edit.doorstop_data import ValidationFinding
 from doorstop_edit.ui_gen.ui_main import Ui_MainWindow
 from tools.gen_sample_tree import generate_tree
@@ -54,6 +56,197 @@ def count_items_in_current_document(app: DoorstopEdit) -> int:
     for _ in app.selected_document or []:
         count += 1
     return count
+
+
+def test_add_document_creates_and_selects_new_document(
+    qtbot: QtBot, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    previous_validation_revision = app._validation_revision
+
+    class AcceptedDialog:
+        created_prefix = "NEW"
+
+        def __init__(
+            self,
+            parent: object,
+            prefixes: object,
+            selected_prefix: object,
+            callback: object,
+            *,
+            allow_top_level: bool,
+        ) -> None:
+            assert "REQ-A" in prefixes  # type: ignore[operator]
+            assert selected_prefix == "REQ-A"
+            assert allow_top_level is False
+            callback("NEW", "REQ-A")  # type: ignore[operator]
+
+        def exec(self) -> int:
+            return application_module.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(application_module, "AddDocumentDialog", AcceptedDialog)
+    app._on_add_document_clicked()
+    assert app.window.ui.tree_combo_box.currentData() == "NEW"
+    assert app.selected_document is not None and app.selected_document.prefix == "NEW"
+    assert app.window.ui.remove_document_button.isEnabled()
+    assert app._validation_revision > previous_validation_revision
+    app.doorstop_data.remove_document("NEW")
+
+
+def test_add_dialog_allows_top_level_document_in_empty_project(
+    qtbot: QtBot, tmp_path: Path, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(InfoDialog, "inform", lambda *_: None)
+    app._rebuild_root(new_root=tmp_path)
+    values: list[bool] = []
+
+    class CancelledDialog:
+        created_prefix = None
+
+        def __init__(self, *_args: object, allow_top_level: bool) -> None:
+            values.append(allow_top_level)
+
+        def exec(self) -> int:
+            return application_module.QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(application_module, "AddDocumentDialog", CancelledDialog)
+    app._on_add_document_clicked()
+    assert values == [True]
+
+
+def test_add_dialog_keeps_invalid_prefix_open_and_accepts_callback(qtbot: QtBot, app: DoorstopEdit) -> None:
+    calls: list[tuple[str, Optional[str]]] = []
+
+    def create(prefix: str, parent: Optional[str]) -> str:
+        calls.append((prefix, parent))
+        if "/" in prefix:
+            raise doorstop.DoorstopError("Invalid document prefix")
+        return prefix
+
+    dialog = AddDocumentDialog(app.window, ["REQ-A"], "REQ-A", create)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.prefix_edit.setText("BAD/NAME")
+    dialog.create_button.click()
+    assert dialog.isVisible()
+    assert "Invalid" in dialog.error_label.text()
+    assert calls == [("BAD/NAME", "REQ-A")]
+    dialog.prefix_edit.setText("GOOD")
+    dialog.create_button.click()
+    assert dialog.created_prefix == "GOOD"
+    assert dialog.result() == application_module.QDialog.DialogCode.Accepted
+
+
+def test_remove_parent_refuses_before_confirmation_and_cancel_keeps_leaf(
+    qtbot: QtBot, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app.doorstop_data.create_document("TEMP", parent="REQ-A")
+    notices: list[str] = []
+    monkeypatch.setattr(InfoDialog, "inform", lambda _parent, _title, text: notices.append(text))
+    monkeypatch.setattr(ConfirmDialog, "ask", lambda *_: pytest.fail("must not confirm parent"))
+    app._on_remove_document_clicked()
+    assert notices and "TEMP" in notices[0]
+
+    leaf_index = app.window.ui.tree_combo_box.findData("TEMP")
+    app.window.ui.tree_combo_box.setCurrentIndex(leaf_index)
+    monkeypatch.setattr(ConfirmDialog, "ask", lambda *_: False)
+    app._on_remove_document_clicked()
+    assert app.doorstop_data.find_document("TEMP") is not None
+    app.doorstop_data.remove_document("TEMP")
+
+
+def test_remove_confirmed_leaf_refreshes_selector_and_empty_editor(
+    qtbot: QtBot, tmp_path: Path, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    generate_tree(tmp_path, 1, 1)
+    app._rebuild_root(new_root=tmp_path)
+    # The sample generator includes non-document image assets; this scenario
+    # targets selector/editor refresh rather than the unmanaged-content guard.
+    import shutil
+
+    shutil.rmtree(tmp_path / "REQ-A" / "images", ignore_errors=True)
+    leaf = app.doorstop_data.create_document("ONLY", parent="REQ-A")
+    app.window.ui.tree_combo_box.setCurrentIndex(app.window.ui.tree_combo_box.findData(leaf))
+    monkeypatch.setattr(ConfirmDialog, "ask", lambda *_: True)
+    with patch.object(application_module.QMessageBox, "warning") as warning:
+        app._on_remove_document_clicked()
+    warning.assert_not_called()
+    assert app.selected_document is not None and app.selected_document.prefix == "REQ-A"
+    assert app.window.ui.tree_combo_box.findData("ONLY") == -1
+    assert app.window.ui.item_edit_uid.text() == ""
+
+
+def test_remove_last_document_leaves_empty_selection(
+    qtbot: QtBot, tmp_path: Path, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    generate_tree(tmp_path, 1, 1)
+    import shutil
+
+    shutil.rmtree(tmp_path / "REQ-A" / "images", ignore_errors=True)
+    app._rebuild_root(new_root=tmp_path)
+    monkeypatch.setattr(ConfirmDialog, "ask", lambda *_: True)
+    app._on_remove_document_clicked()
+    assert app.window.ui.tree_combo_box.count() == 0
+    assert app.selected_document is None
+    assert not app.window.ui.remove_document_button.isEnabled()
+    assert app.window.ui.item_tree_widget.topLevelItemCount() == 0
+    assert app.window.ui.item_edit_uid.text() == ""
+
+
+def test_remove_backend_failure_reports_partial_state(
+    qtbot: QtBot, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    leaf_prefix = "REQ-C"
+    assert app.doorstop_data.find_document(leaf_prefix) is not None
+    app.window.ui.tree_combo_box.setCurrentIndex(app.window.ui.tree_combo_box.findData(leaf_prefix))
+    monkeypatch.setattr(
+        InfoDialog,
+        "inform",
+        lambda *_: pytest.fail("Unexpected child-document refusal for a leaf"),
+    )
+    monkeypatch.setattr(ConfirmDialog, "ask", lambda *_: True)
+    messages: list[str] = []
+    monkeypatch.setattr(application_module.QMessageBox, "warning", lambda _parent, _title, text: messages.append(text))
+
+    def fail_remove(_prefix: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(app.doorstop_data, "remove_document", fail_remove)
+    app._on_remove_document_clicked()
+    assert "disk full" in messages[0]
+
+
+def test_remove_refresh_failure_warns_and_disables_stale_editor(
+    qtbot: QtBot, tmp_path: Path, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    generate_tree(tmp_path, 1, 1)
+    shutil.rmtree(tmp_path / "REQ-A" / "images", ignore_errors=True)
+    app._rebuild_root(new_root=tmp_path)
+    monkeypatch.setattr(ConfirmDialog, "ask", lambda *_: True)
+    messages: list[str] = []
+    monkeypatch.setattr(application_module.QMessageBox, "warning", lambda _parent, _title, text: messages.append(text))
+
+    def fail_rebuild(*_args: object, **_kwargs: object) -> None:
+        raise doorstop.DoorstopError("simulated reload failure")
+
+    real_rebuild = app.doorstop_data.rebuild
+    monkeypatch.setattr(app.doorstop_data, "rebuild", fail_rebuild)
+    app._on_remove_document_clicked()
+
+    assert not (tmp_path / "REQ-A").exists()
+    assert app.doorstop_data.tree_stale
+    assert "tree may be stale" in messages[0]
+    assert "reopen or reload" in messages[0].lower()
+    assert not app.window.ui.tree_combo_box.isEnabled()
+    assert not app.window.ui.add_document_button.isEnabled()
+    assert not app.window.ui.remove_document_button.isEnabled()
+    assert app.item_edit_view.item is None
+
+    monkeypatch.setattr(app.doorstop_data, "rebuild", real_rebuild)
+    monkeypatch.setattr(InfoDialog, "inform", lambda *_: None)
+    app._rebuild_root(new_root=tmp_path)
+    assert not app.doorstop_data.tree_stale
 
 
 def click_item_in_tree(qtbot: QtBot, ui: Ui_MainWindow, index: int) -> None:

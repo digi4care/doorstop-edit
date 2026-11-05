@@ -14,6 +14,13 @@ from doorstop_edit.utils.debug_timer import time_function
 from doorstop_edit.utils.file_watcher import FileWatcher
 
 logger = logging.getLogger("gui")
+_WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
+    f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
+}
+
+
+class DocumentRemovalRefreshError(doorstop.DoorstopError):
+    """Deletion was attempted, but the application could not reload the tree."""
 
 
 @dataclass(frozen=True)
@@ -123,6 +130,7 @@ class DoorstopData(QObject):
         super().__init__(parent=parent)
         self.root = root
         self._tree: Optional[doorstop.Tree] = None
+        self.tree_stale = False
         self.item_metadata: Dict[str, ItemMetadata] = {}
         self.item_load_errors: Dict[str, str] = {}
         self.file_watcher = FileWatcher(self._on_filewatch_callback)
@@ -167,6 +175,7 @@ class DoorstopData(QObject):
             candidate_root = new_root if new_root is not None else self.root
             previous_root = self.root
             previous_tree = self._tree
+            previous_tree_stale = self.tree_stale
             previous_errors = self.item_load_errors
             previous_docs = list(self.file_watcher.scheduled_docs)
             self.file_watcher.pause()
@@ -184,11 +193,13 @@ class DoorstopData(QObject):
                 # Commit only after all project/document configuration loads succeed.
                 self.root = candidate_root
                 self._tree = candidate_tree
+                self.tree_stale = False
                 self.item_load_errors = candidate_errors
                 self.file_watcher.watch(list(candidate_tree))
             except Exception:
                 self.root = previous_root
                 self._tree = previous_tree
+                self.tree_stale = previous_tree_stale
                 self.item_load_errors = previous_errors
                 try:
                     self.file_watcher.watch(previous_docs)
@@ -239,6 +250,108 @@ class DoorstopData(QObject):
     def find_document(self, name: str) -> Optional[doorstop.Document]:
         return self.get_documents().get(name, None)
 
+    def create_document(self, prefix: str, parent: Optional[str] = None) -> str:
+        """Create a safely named document under the project root and reload the tree."""
+        if self.tree_stale:
+            raise doorstop.DoorstopError("The document tree may be stale; reload the project before editing")
+        if not isinstance(prefix, str) or not prefix or any(char.isspace() for char in prefix):
+            raise doorstop.DoorstopError("Document prefix must not be blank or contain whitespace")
+        if (
+            prefix in (".", "..")
+            or any(char in prefix for char in '/\\:*?"<>|')
+            or any(ord(char) < 32 or ord(char) == 127 for char in prefix)
+            or prefix.endswith(".")
+            or prefix.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES
+        ):
+            raise doorstop.DoorstopError(f"Invalid document prefix: {prefix!r}")
+        if self.root is None or self._tree is None:
+            raise doorstop.DoorstopError("No project tree is loaded")
+        if prefix in self.get_documents():
+            raise doorstop.DoorstopError(f"Document prefix already exists: {prefix}")
+        if parent is None and any(document.parent is None for document in self.get_documents().values()):
+            raise doorstop.DoorstopError("A top-level document already exists; choose a parent document")
+        if parent is not None and self.find_document(parent) is None:
+            raise doorstop.DoorstopError(f"Unknown parent document: {parent}")
+        target = self.root / prefix
+        try:
+            target.resolve().relative_to(self.root.resolve())
+        except ValueError as exc:
+            raise doorstop.DoorstopError(f"Document path escapes project root: {prefix}") from exc
+        if target.exists():
+            raise doorstop.DoorstopError(f"Document path already exists: {target}")
+        try:
+            document = self._tree.create_document(path=str(target), value=prefix, parent=parent)
+            return str(document.prefix)
+        finally:
+            self.rebuild()
+
+    def remove_document(self, prefix: str) -> None:
+        """Delete a leaf document, refusing to delete unmanaged directory content."""
+        if self.tree_stale:
+            raise doorstop.DoorstopError("The document tree may be stale; reload the project before editing")
+        document = self.find_document(prefix)
+        if document is None:
+            raise doorstop.DoorstopError(f"Unknown document: {prefix}")
+        if document.children:
+            raise doorstop.DoorstopError(f"Cannot remove document {prefix}; child documents exist")
+        if self.root is None:
+            raise doorstop.DoorstopError("No project root is loaded")
+        path = Path(document.path)
+        if path.is_symlink():
+            raise doorstop.DoorstopError(f"Cannot remove document through symlink directory: {path}")
+        project_root = self.root.resolve()
+        document_root = path.resolve()
+        try:
+            document_root.relative_to(project_root)
+        except ValueError as exc:
+            raise doorstop.DoorstopError(f"Document directory is outside project root: {path}") from exc
+        item_paths = {Path(item.path) for item in document}
+        config_path = Path(document.config)
+        if config_path.is_symlink():
+            raise doorstop.DoorstopError(f"Cannot remove document with symlink config: {config_path}")
+        config_resolved = config_path.resolve()
+        try:
+            config_resolved.relative_to(document_root)
+        except ValueError as exc:
+            raise doorstop.DoorstopError(f"Document config is outside its directory: {config_path}") from exc
+        for item_path in item_paths:
+            if item_path.is_symlink():
+                raise doorstop.DoorstopError(f"Cannot remove document with symlink item: {item_path}")
+            try:
+                item_path.resolve().relative_to(document_root)
+            except ValueError as exc:
+                raise doorstop.DoorstopError(f"Document item is outside its directory: {item_path}") from exc
+        entries = list(path.iterdir())
+        symlinks = [entry for entry in entries if entry.is_symlink()]
+        if symlinks:
+            names = ", ".join(entry.name for entry in symlinks)
+            raise doorstop.DoorstopError(f"Cannot remove document with symlink entries: {names}")
+        item_paths_resolved = {item_path.resolve() for item_path in item_paths}
+        unmanaged = [
+            entry
+            for entry in entries
+            if entry.resolve() not in item_paths_resolved and entry.resolve() != config_resolved
+        ]
+        if unmanaged:
+            names = ", ".join(entry.name for entry in unmanaged)
+            raise doorstop.DoorstopError(f"Cannot remove document; unmanaged entries: {names}")
+        mutation_attempted = True
+        try:
+            document.delete()
+            if config_path.exists():
+                config_path.unlink()
+            if path.exists():
+                path.rmdir()
+        finally:
+            if mutation_attempted:
+                try:
+                    self.rebuild()
+                except Exception as exc:
+                    self.tree_stale = True
+                    raise DocumentRemovalRefreshError(
+                        f"Deletion of {prefix} was attempted, but the document tree could not be refreshed: {exc}"
+                    ) from exc
+
     def find_item(self, item_uid: str, document: Union[str, doorstop.Document, None] = None) -> Optional[doorstop.Item]:
         doc: Optional[doorstop.Document] = None
         if document is None:
@@ -277,6 +390,10 @@ class DoorstopData(QObject):
         This application must always call this instead of directly calling Item.save() to be able to
         restore the item later.
         """
+        if self.tree_stale:
+            raise ValueError(
+                "The document tree may be stale after a failed deletion; reload the project before editing"
+            )
         if self.get_item_load_error(str(item.uid)) is not None:
             raise ValueError(f"Cannot save invalid item {item.uid} until its file is valid")
         # Validate independently: loading into `item` would discard unsaved editor state.
