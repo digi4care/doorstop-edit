@@ -196,7 +196,8 @@ class RenderWorker(QThread):
     Rendering can sometimes be a bit slow, especially if it contains plantUML.
     """
 
-    result_ready = Signal(str, str, name="result_ready")
+    result_ready = Signal(str, str, int, name="result_ready")
+    batch_finished = Signal(int, name="batch_finished")
     progress = Signal(int, name="progress")
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
@@ -212,6 +213,7 @@ class RenderWorker(QThread):
 
         self.items: List[Tuple[doorstop.Item, int]] = []
         self.root: Path = Path()
+        self.generation = 0
 
     def destroy(self) -> None:
         with QMutexLocker(self.mutex):
@@ -220,7 +222,7 @@ class RenderWorker(QThread):
         self.wait()
 
     @time_function("render")
-    def render(self, items: List[Tuple[doorstop.Item, int]], root: Path, partial: bool) -> None:
+    def render(self, items: List[Tuple[doorstop.Item, int]], root: Path, partial: bool, generation: int) -> None:
         """Render HTML from doorstop items.
 
         Args:
@@ -231,6 +233,7 @@ class RenderWorker(QThread):
             self.items = items
             self.root = root
             self.partial = partial
+            self.generation = generation
             self.change += 1
             self.restart = True
             self.condition.wakeOne()
@@ -256,6 +259,8 @@ class RenderWorker(QThread):
                 items = self.items.copy()
                 partial = self.partial
                 root = Path(self.root)
+                generation = self.generation
 
             for uid, content in item_renderer.process(root=str(root), partial=partial, items=items):
-                self.result_ready.emit(uid, content)
+                self.result_ready.emit(uid, content, generation)
+            self.batch_finished.emit(generation)

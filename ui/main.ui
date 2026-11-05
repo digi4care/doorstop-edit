@@ -172,6 +172,7 @@
     </property>
     <addaction name="menu_action_open_folder"/>
     <addaction name="separator"/>
+    <addaction name="menu_action_validate_project"/>
     <addaction name="menu_action_settings"/>
     <addaction name="separator"/>
     <addaction name="menu_action_exit"/>
@@ -194,7 +195,19 @@
    <addaction name="menuView"/>
    <addaction name="menuAbout"/>
   </widget>
-  <widget class="QStatusBar" name="statusbar"/>
+  <widget class="QStatusBar" name="statusbar">
+   <widget class="QToolButton" name="validation_status">
+    <property name="toolTip">
+     <string>Open all project validation findings</string>
+    </property>
+    <property name="accessibleName">
+     <string>Project validation results</string>
+    </property>
+    <property name="text">
+     <string>Validation not run</string>
+    </property>
+   </widget>
+  </widget>
   <widget class="QDockWidget" name="edit_item_dock_widget">
    <property name="sizePolicy">
     <sizepolicy hsizetype="Preferred" vsizetype="Expanding">
@@ -1132,6 +1145,14 @@ Blah blah blah</string>
   <action name="menu_action_open_folder">
    <property name="text">
     <string>Open Folder...</string>
+   </property>
+  </action>
+  <action name="menu_action_validate_project">
+   <property name="text">
+    <string>Validate project</string>
+   </property>
+   <property name="toolTip">
+    <string>Check all documents and items</string>
    </property>
   </action>
  </widget>
