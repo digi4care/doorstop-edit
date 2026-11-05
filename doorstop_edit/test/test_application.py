@@ -170,14 +170,17 @@ def test_document_clear_all_suspect_links(qtbot: QtBot, app: DoorstopEdit, monke
     assert item_clear_mock.call_count == count_items_in_current_document(app)
 
 
-def test_open_folder(qtbot: QtBot, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_open_folder(qtbot: QtBot, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch, tree_root: Path) -> None:
     monkeypatch.setattr(
         InfoDialog, "inform", classmethod(lambda *_: None)
     )  # We will open an empty directory which will trigger an inform.
 
-    with tempfile.TemporaryDirectory() as tempDir, patch.object(doorstop, "build") as doorstop_build:
-        monkeypatch.setattr(QFileDialog, "getExistingDirectory", classmethod(lambda *_: tempDir))
-        with qtbot.wait_signal(app.window.ui.menu_action_open_folder.triggered):
-            app.window.ui.menu_action_open_folder.trigger()
+    try:
+        with tempfile.TemporaryDirectory() as tempDir, patch.object(doorstop, "build") as doorstop_build:
+            monkeypatch.setattr(QFileDialog, "getExistingDirectory", classmethod(lambda *_: tempDir))
+            with qtbot.wait_signal(app.window.ui.menu_action_open_folder.triggered):
+                app.window.ui.menu_action_open_folder.trigger()
 
-        assert doorstop_build.call_count == 1
+            assert doorstop_build.call_count == 1
+    finally:
+        app.doorstop_data.rebuild(new_root=tree_root)
