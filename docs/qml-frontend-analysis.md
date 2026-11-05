@@ -201,7 +201,7 @@ Candidate architecture: Python builds a typed graph projection from the live Doo
 
 **User decisions (2026-11-05):** the first in-app graph should support all three initial goals: explore document/item/requirement relationships, perform impact analysis, and show live review/suspect-link/validation status. Start with an app-native typed ontology and an in-memory graph derived from Doorstop; Doorstop remains the source of truth. Target visible graph updates within **1 second** after a successful local mutation or external file-watcher update. Do not add a graph database, persistent graph storage, RDF/OWL/JSON-LD export, or a second watcher in v1; revisit only if a concrete interoperability or persistence use-case emerges.
 
-The graph should remain optional and must not replace the document tree or editor. Handle stale events/errors consistently with the existing data model. Detailed ontology labels/edge semantics, graph-query interaction design, performance thresholds for large projects, and validation of the one-second target remain implementation-stage acceptance work.
+The graph should remain optional and must not replace the document tree or editor. Handle stale events/errors consistently with the existing data model. The source-backed v1 vocabulary, competency questions, status/provenance semantics, update contract and validation plan are defined in [`app-knowledge-graph-ontology.md`](app-knowledge-graph-ontology.md). UI/query interaction and the one-second/performance targets still require implementation evidence.
 
 ## 8. Analysis completion status
 
