@@ -26,6 +26,7 @@ def app_session(tree_root: Path) -> Iterator[DoorstopEdit]:
     """
     app = DoorstopEdit(tree_root)
     app.start()  # Must show it, clicks wont work otherwise.
+    app.doorstop_data.stop()  # Application behavior tests do not exercise the file watcher.
     yield app
     app.quit()
 
