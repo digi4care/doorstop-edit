@@ -886,9 +886,15 @@ Blah blah blah</string>
               </widget>
              </item>
              <item>
-              <widget class="QToolButton" name="edit_document_button">
-               <property name="text">
-                <string>A</string>
+               <widget class="QToolButton" name="edit_document_button">
+                <property name="toolTip">
+                 <string>Add a document to the open project</string>
+                </property>
+                <property name="accessibleName">
+                 <string>Add document</string>
+                </property>
+                <property name="text">
+                 <string>Add document</string>
                </property>
                <property name="icon">
                 <iconset resource="resources.qrc">
@@ -897,9 +903,15 @@ Blah blah blah</string>
               </widget>
              </item>
              <item>
-              <widget class="QToolButton" name="toolButton_2">
-               <property name="text">
-                <string>D</string>
+               <widget class="QToolButton" name="toolButton_2">
+                <property name="toolTip">
+                 <string>Remove the selected document</string>
+                </property>
+                <property name="accessibleName">
+                 <string>Remove document</string>
+                </property>
+                <property name="text">
+                 <string>Remove document</string>
                </property>
                <property name="icon">
                 <iconset resource="resources.qrc">

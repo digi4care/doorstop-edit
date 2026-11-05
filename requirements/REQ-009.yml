@@ -1,0 +1,19 @@
+active: true
+derived: false
+header: |
+  Normale afsluiting van een geïsoleerde testsessie
+level: 8.1
+links: []
+normative: true
+ref: ''
+references: []
+reviewed: TdP8jOaPFzl10Ne2YGVWK28aRt7LA5ZXKL-TsiHvFGY=
+source: ../docs/quality-review-baseline.md#isolated-test-process-finalization
+text: |
+  After all assertions in an isolated run of
+  `doorstop_edit/test/test_application.py` complete, the test process must
+  finish cleanup and exit normally with status 0.
+
+  This requirement records the expected outcome for the existing investigation
+  `doorstop-edit-7cc`; it does not claim that the cause or a fix is known.
+verified: false

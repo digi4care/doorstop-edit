@@ -14,6 +14,7 @@ from PySide6.QtCore import (
     Signal,
 )
 
+from doorstop_edit import crash_log
 from doorstop_edit.item_render.fragmented_markdown import Element, FragmentedMarkdown
 from doorstop_edit.utils import item_utils
 from doorstop_edit.utils.debug_timer import time_function
@@ -214,10 +215,12 @@ class RenderWorker(QThread):
         self.root: Path = Path()
 
     def destroy(self) -> None:
+        crash_log.record("render.destroy.begin")
         with QMutexLocker(self.mutex):
             self.abort = True
             self.condition.wakeOne()
         self.wait()
+        crash_log.record("render.destroy.end")
 
     @time_function("render")
     def render(self, items: List[Tuple[doorstop.Item, int]], root: Path, partial: bool) -> None:
@@ -235,18 +238,26 @@ class RenderWorker(QThread):
             self.restart = True
             self.condition.wakeOne()
 
+        crash_log.record("render.request", change=self.change, item_count=len(items), partial=partial)
+
         if not self.isRunning():
             self.start(QThread.Priority.NormalPriority)
 
     def _on_progress(self, p: int) -> None:
-        self.progress.emit(p)
+        crash_log.record("render.progress.emit.begin", percentage=p)
+        try:
+            self.progress.emit(p)
+        finally:
+            crash_log.record("render.progress.emit.end", percentage=p)
 
     def run(self) -> None:
+        crash_log.record("render.worker.start")
         item_renderer = ItemRenderer(self._on_progress)
         last_change = 0
         while True:
             with QMutexLocker(self.mutex) as qm:
                 if self.abort:
+                    crash_log.record("render.worker.stop", reason="abort")
                     return
                 if self.change == last_change:
                     self.condition.wait(qm.mutex())
@@ -258,4 +269,8 @@ class RenderWorker(QThread):
                 root = Path(self.root)
 
             for uid, content in item_renderer.process(root=str(root), partial=partial, items=items):
-                self.result_ready.emit(uid, content)
+                crash_log.record("render.result_ready.emit.begin", uid=uid)
+                try:
+                    self.result_ready.emit(uid, content)
+                finally:
+                    crash_log.record("render.result_ready.emit.end", uid=uid)

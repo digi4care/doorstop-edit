@@ -25,13 +25,6 @@ way as doorstop.
 * **Markdown formatting tool** powered by `mdformat` for the text attribute.
 * **Pin feature** for easy access to work-in-progress items.
 * And more...
-
-
-**TODO list:**
-
-* Add and remove document.
-* Validating documents and items in a user-friendly manner.
-
 ## Install
 
 Automatic install with pip:

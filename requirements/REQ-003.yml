@@ -1,0 +1,18 @@
+active: true
+derived: false
+evidence:
+- |
+  ../doorstop_edit/test/test_validation.py#test_validation_policy_stays_stable_and_does_not_write_item_files
+header: ''
+level: 3.0
+links: []
+normative: true
+ref: ''
+references:
+- path: docs/validation-policy.md
+  type: file
+reviewed: 6q9mZRWmGA5K_L65n-YEqaP9vLSxoZ1bCKgPeKeD0JQ=
+source: ../docs/validation-policy.md#mvp-3-feedback
+text: |
+  Built-in validation must not reformat files, review new items, or reorder levels.
+verified: true

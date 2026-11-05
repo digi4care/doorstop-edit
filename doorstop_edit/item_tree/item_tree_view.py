@@ -1,5 +1,5 @@
 import logging
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import doorstop
 from PySide6.QtCore import QPoint, Qt, Slot
@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QLineEdit, QMenu, QTreeWidget, QTreeWidgetItem
 
 from doorstop_edit.app_signals import AppSignals
 from doorstop_edit.dialogs import ConfirmDialog
-from doorstop_edit.doorstop_data import DoorstopData
+from doorstop_edit.doorstop_data import DoorstopData, ValidationFinding
 from doorstop_edit.item_tree.document_item_level_tree import (
     DocumentItemLevelTree,
     build_item_level_tree,
@@ -45,6 +45,7 @@ class ItemTreeView:
 
         self._selected_document_name: Optional[str] = None
         self._selected_item_uids: List[str] = []
+        self._validation_findings: Dict[str, List[ValidationFinding]] = {}
 
         self._filter_show_inactive = False
         self._filter_search_input: List[str] = []
@@ -87,12 +88,32 @@ class ItemTreeView:
             CustomColorItemDelegate.STYLED_ITEM_ROLE,
             (bg_color, fg_color, font_style),
         )
+        findings = self._validation_findings.get(str(item.uid), [])
+        validation_color = fg_color
+        if findings:
+            prefix = "✕ " if any(f.severity == "error" for f in findings) else "⚠ "
+            validation_color = Theme.DANGER_COLOR if prefix == "✕ " else Theme.WARNING_COLOR
+            if all(f.severity == "info" for f in findings):
+                prefix = "ℹ "
+                validation_color = fg_color
+            text = prefix + text
+            w_item.setToolTip(1, "\n".join(f"{f.severity.capitalize()}: {f.message}" for f in findings))
+        else:
+            w_item.setToolTip(1, "")
         w_item.setText(1, text)
         w_item.setData(
             1,
             CustomColorItemDelegate.STYLED_ITEM_ROLE,
-            (bg_color, fg_color, font_style),
+            (bg_color, validation_color, font_style),
         )
+
+    def set_validation_findings(self, findings: List[ValidationFinding]) -> None:
+        by_uid: Dict[str, List[ValidationFinding]] = {}
+        for finding in findings:
+            if finding.item_uid is not None:
+                by_uid.setdefault(finding.item_uid, []).append(finding)
+        self._validation_findings = by_uid
+        self._update(notify_change=False)
 
     def _build(
         self, item_tree: DocumentItemLevelTree, parent: Optional[QTreeWidgetItem] = None
@@ -136,6 +157,21 @@ class ItemTreeView:
             sel, orph = self._build(child, children_parent)
             selected.extend(sel)
             orphans.extend(orph)
+
+        for item, load_error in item_tree.invalid_items:
+            invalid_row = QTreeWidgetItem()
+            uid = str(item.uid)
+            invalid_row.setText(0, "—")
+            invalid_row.setText(1, f"✕ {uid} · Unable to load item")
+            invalid_row.setData(1, CustomColorItemDelegate.STYLED_ITEM_ROLE, (None, Theme.DANGER_COLOR, ""))
+            invalid_row.setData(self.UID_COLUMN, Qt.ItemDataRole.UserRole, uid)
+            messages = self._validation_findings.get(uid, [])
+            invalid_row.setToolTip(
+                1, "\n".join(f"{f.severity.capitalize()}: {f.message}" for f in messages) or load_error
+            )
+            if uid in self._selected_item_uids:
+                selected.append(invalid_row)
+            orphans.append(invalid_row)
 
         return selected, orphans
 

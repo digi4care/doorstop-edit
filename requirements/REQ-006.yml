@@ -1,0 +1,18 @@
+active: true
+derived: false
+evidence:
+- |
+  ../doorstop_edit/test/test_application.py#test_remove_parent_with_children_blocked_before_confirmation
+header: ''
+level: 6.0
+links: []
+normative: true
+ref: ''
+references:
+- path: docs/document-management.md
+  type: file
+reviewed: tM_oDqhOhbGq1n6ryud07v3MKnAqIvpqptQD160Py-A=
+source: ../docs/document-management.md#removing-a-document
+text: |
+  Document removal must refuse documents with children before confirmation or destructive operations, and must not implicitly delete, move, or reparent children.
+verified: true

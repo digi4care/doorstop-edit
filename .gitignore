@@ -14,3 +14,15 @@ doorstop_edit/build_info.py
 coverage.xml
 htmlcov/
 ui/*.py
+
+# LeanKG local index and runtime state
+.leankg/
+.codescope/
+
+# Deepwork orchestration state
+.slim/deepwork/
+
+# BEGIN oh-my-opencode-slim worktrees
+.slim/worktrees/
+.slim/worktrees.json
+# END oh-my-opencode-slim worktrees

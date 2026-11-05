@@ -1,0 +1,18 @@
+active: true
+derived: false
+evidence:
+- |
+  ../doorstop_edit/test/test_application.py#test_validation_action_and_tree_feedback
+header: ''
+level: 1.0
+links: []
+normative: true
+ref: ''
+references:
+- path: docs/validation-policy.md
+  type: file
+reviewed: oqUASDvfiVNlYUTMnGowDqSeGHP3j4YCSS4E7TN4rdU=
+source: ../docs/validation-policy.md#decision
+text: |
+  The application must validate the whole project after tree loading, after each successful item save, and on explicit user request.
+verified: true

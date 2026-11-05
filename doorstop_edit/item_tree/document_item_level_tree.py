@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import doorstop
 
@@ -9,6 +9,7 @@ class DocumentItemLevelTree:
     def __init__(self) -> None:
         self.content: Dict[int, "DocumentItemLevelTree"] = {}
         self.items: List[doorstop.Item] = []
+        self.invalid_items: List[Tuple[doorstop.Item, str]] = []
 
     def sort(self) -> None:
         self.content = dict(sorted(self.content.items()))
@@ -45,7 +46,14 @@ def build_item_level_tree(document: doorstop.Document) -> DocumentItemLevelTree:
     root = DocumentItemLevelTree()
     for item in document:
         ptr = root
-        for level_part in parse_level(item):
+        try:
+            parts = parse_level(item)
+        except doorstop.DoorstopError as exc:
+            # Item.uid is derived from the checked filename, even if its YAML
+            # is not readable; keep a row visible for validation feedback.
+            root.invalid_items.append((item, str(exc)))
+            continue
+        for level_part in parts:
             if level_part not in ptr.content:
                 ptr.content[level_part] = DocumentItemLevelTree()
             ptr = ptr.content[level_part]

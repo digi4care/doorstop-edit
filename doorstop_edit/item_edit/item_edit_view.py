@@ -415,6 +415,7 @@ class ItemEditView:
         self._disable_save = True
         try:
             if self.item is None:
+                self.ui.item_edit_uid.clear()
                 self._enable(False)
                 return
 

@@ -1,0 +1,18 @@
+active: true
+derived: false
+evidence:
+- |
+  ../doorstop_edit/test/test_application.py#test_validation_requests_coalesce_while_running
+header: ''
+level: 2.0
+links: []
+normative: true
+ref: ''
+references:
+- path: docs/validation-policy.md
+  type: file
+reviewed: e_Lbd8xlivKlkqry8I085kkWvsdNng4NQTaLQrdrbtY=
+source: ../docs/validation-policy.md#mvp-3-feedback
+text: |
+  While validation runs, further requests must coalesce into one new check, and superseded results must not be shown.
+verified: true
