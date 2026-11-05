@@ -52,6 +52,7 @@ jobs:
           prerelease: ${{ steps.check-version.outputs.prerelease == 'true' }}
 
       - name: Publish to PyPI
+        if: github.repository == 'ownbee/doorstop-edit'
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
         run: uv publish --token "$UV_PUBLISH_TOKEN"
