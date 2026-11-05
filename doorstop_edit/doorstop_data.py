@@ -127,10 +127,15 @@ class DoorstopData(QObject):
         self.root = root
         self._tree: Optional[doorstop.Tree] = None
         self.item_metadata: Dict[str, ItemMetadata] = {}
+        self._item_load_errors: Dict[str, str] = {}
         self.file_watcher = FileWatcher(self._on_filewatch_callback)
 
     def has_root(self) -> bool:
         return self.root is not None
+
+    def item_load_errors(self) -> Dict[str, str]:
+        """Return a copy of current item load failures keyed by stable UID."""
+        return dict(self._item_load_errors)
 
     def start(self) -> None:
         self.file_watcher.start()
@@ -145,11 +150,15 @@ class DoorstopData(QObject):
             if item is None:
                 do_rebuild = True
             else:
+                uid = str(item.uid)
                 try:
                     item.load(reload=True)
                 except doorstop.DoorstopError as exc:
                     # Keep the tree available so validation can show this item.
+                    self._item_load_errors[uid] = str(exc)
                     logger.warning("Unable to load %s: %s", item.uid, exc)
+                else:
+                    self._item_load_errors.pop(uid, None)
                 self.tree_changed.emit(True)
 
         if ".doorstop" in filename:
@@ -167,6 +176,7 @@ class DoorstopData(QObject):
         if new_root is not None or self._tree is None or not only_reload:
             self.file_watcher.pause()  # Dont trigger any events while rebuilding
             self._tree = doorstop.build(cwd=str(self.root), root=str(self.root))
+            self._item_load_errors.clear()
 
         # Eagerly load valid items without letting one malformed item prevent
         # the project and its other items from opening.
@@ -174,11 +184,15 @@ class DoorstopData(QObject):
             document.load()
             has_invalid_item = False
             for item in document:
+                uid = str(item.uid)
                 try:
                     item.load(reload=True)
                 except doorstop.DoorstopError as exc:
                     has_invalid_item = True
+                    self._item_load_errors[uid] = str(exc)
                     logger.warning("Unable to load %s: %s", item.uid, exc)
+                else:
+                    self._item_load_errors.pop(uid, None)
             if only_reload and not has_invalid_item:
                 # Preserve Doorstop's document config reload on ordinary refreshes.
                 document.load(reload=True)
