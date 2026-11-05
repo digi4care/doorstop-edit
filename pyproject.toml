@@ -53,6 +53,7 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["doorstop_edit"]
+include = ["doorstop_edit/qml/*.qml"]
 exclude = ["**/test/**", "**/tests/**", "**/conftest.py"]
 
 [tool.hatch.build.targets.sdist]
@@ -92,6 +93,7 @@ follow_imports = 'silent'
 
 [project.scripts]
 doorstop-edit = 'doorstop_edit.main:main'
+doorstop-edit-qml = 'doorstop_edit.qml_main:main'
 
 [build-system]
 requires = ["hatchling>=1.26"]
