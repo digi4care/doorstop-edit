@@ -1,4 +1,6 @@
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import doorstop
@@ -15,7 +17,7 @@ def test_collect_validation_attributes_builtin_findings_without_parsing_message(
     first_uid = ""
     with patch.object(doorstop.Tree, "get_issues", autospec=True) as get_issues:
 
-        def issues(tree, *, document_hook, item_hook):
+        def issues(tree: doorstop.Tree, *, document_hook: Any, item_hook: Any) -> Iterator[Any]:
             from doorstop.common import DoorstopWarning
 
             nonlocal first_uid
@@ -49,7 +51,7 @@ def test_validation_policy_stays_stable_and_does_not_write_item_files(tree_root:
     before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in item_paths}
     real_get_issues = doorstop.Tree.get_issues
 
-    def check_settings_during_validation(tree, **kwargs):
+    def check_settings_during_validation(tree: doorstop.Tree, **kwargs: Any) -> Iterator[Any]:
         for issue in real_get_issues(tree, **kwargs):
             assert (
                 doorstop_settings.REFORMAT,

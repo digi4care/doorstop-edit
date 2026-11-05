@@ -112,8 +112,9 @@ def _kill_process_tree(process: Popen[str]) -> None:
         if process.poll() is None:
             process.kill()
     else:
+        # These APIs are Unix-only; retain process-group cleanup there.
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            getattr(os, "killpg")(process.pid, getattr(signal, "SIGKILL"))
         except ProcessLookupError:
             pass
         if process.poll() is None:
