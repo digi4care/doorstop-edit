@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any, cast
 
-from PySide6.QtCore import QMetaObject, QObject, Qt, QUrl
+from PySide6.QtCore import QCoreApplication, QEvent, QMetaObject, QObject, Qt, QUrl
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem, QQuickWindow
 from PySide6.QtTest import QTest
@@ -12,6 +12,15 @@ from pytestqt.qtbot import QtBot
 from doorstop_edit.main import create_parser
 from doorstop_edit.qml_backend import QmlBackend
 from tools.gen_sample_tree import generate_tree
+
+
+def dispose_qml(engine: QQmlApplicationEngine, backend: QmlBackend, qapp: QApplication) -> None:
+    for root in engine.rootObjects():
+        cast(QQuickWindow, root).close()
+    engine.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qapp.processEvents()
+    backend.shutdown()
 
 
 def test_cli_parser_shared_semantics() -> None:
@@ -26,7 +35,7 @@ def test_qml_engine_loads(qapp: QApplication) -> None:
     engine.rootContext().setContextProperty("backend", backend)
     engine.load(QUrl.fromLocalFile(str(Path(__file__).parents[1] / "qml" / "Main.qml")))
     assert engine.rootObjects()
-    backend.shutdown()
+    dispose_qml(engine, backend, qapp)
 
 
 def test_invalid_root_is_reported(qapp: QApplication, tmp_path: Path) -> None:
@@ -171,10 +180,7 @@ def test_qml_editor_preserves_draft_after_external_update(qapp: QApplication, qt
     assert not conflict.property("visible")
     assert not window.property("isDirty")
     assert backend.selectedItem["header"] == "Local draft"
-    backend.shutdown()
-    window.close()
-    engine.deleteLater()
-    qapp.processEvents()
+    dispose_qml(engine, backend, qapp)
 
 
 def test_qml_project_open_select_and_save_interaction(qapp: QApplication, tmp_path: Path) -> None:
@@ -235,8 +241,4 @@ def test_qml_project_open_select_and_save_interaction(qapp: QApplication, tmp_pa
     assert "not a directory" in backend.errorMessage
     assert backend.projectRoot == str(tmp_path)
 
-    window.close()
-    engine.deleteLater()
-    qapp.sendPostedEvents(None, 0)
-    qapp.processEvents()
-    backend.shutdown()
+    dispose_qml(engine, backend, qapp)
