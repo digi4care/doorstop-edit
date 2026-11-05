@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Union
 
 import doorstop
-from PySide6.QtCore import QObject, QUrl, Signal, Slot
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage
@@ -191,8 +191,12 @@ class ItemRenderView(QObject):
         self._update(self._viewed_item, reload=force_reload)
 
     def destroy(self) -> None:
-        self.web_view.page().deleteLater()
         self._render_worker.destroy()
+        page = self.web_view.page()
+        page.deleteLater()
+        # Process the deferred deletion while the application and its WebEngine
+        # profile are still alive; otherwise Qt may release the profile first.
+        QCoreApplication.sendPostedEvents(page, QEvent.Type.DeferredDelete)
 
     def set_view_mode(self, mode: ViewMode) -> None:
         self._view_mode = mode
