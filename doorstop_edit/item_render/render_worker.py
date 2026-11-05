@@ -154,7 +154,8 @@ class ItemRenderer:
             item_text = "\n".join(item.text.splitlines()[1:])
         else:
             item_text = item.text
-        rows.append(("text", add_fragement_proxy(item_text) or ""))
+        text_fragment = add_fragement_proxy(item_text)
+        rows.append(("text", "" if text_fragment is None else text_fragment))
         if item.document and item.document.publish:
             for attr in item.document.publish:
                 if attr in [row[0] for row in rows]:
@@ -163,7 +164,8 @@ class ItemRenderer:
                 if val is None:
                     continue
                 if isinstance(val, str) and len(val) > 0:
-                    rows.append((attr, add_fragement_proxy(val) or ""))
+                    fragment = add_fragement_proxy(val)
+                    rows.append((attr, "" if fragment is None else fragment))
                 elif isinstance(val, bool):
                     rows.append((attr, str(val)))
 
