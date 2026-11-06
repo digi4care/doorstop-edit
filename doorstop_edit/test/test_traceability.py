@@ -1,6 +1,9 @@
 import json
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from tools.traceability import build, status_report, validate
 
@@ -170,7 +173,36 @@ def test_validator_rejects_unhashable_fields_and_edge_provenance() -> None:
     assert validate(graph)
 
 
-def test_status_report_marks_current_claim_stale_on_later_snapshot(tmp_path: Path) -> None:
+def test_status_report_marks_current_claim_stale_on_later_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Keep the test repository nested: pytest may set --basetemp to the checkout.
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    parent = Path(__file__).resolve().parents[2]
+    clean_env = os.environ.copy()
+    for key in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_PREFIX",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ):
+        clean_env.pop(key, None)
+    parent_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=parent,
+        env=clean_env,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    # Simulate a pre-push hook environment that redirects ordinary Git commands.
+    monkeypatch.setenv("GIT_DIR", str(parent / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(parent))
+    git_env = clean_env
     graph = {
         "repository": {"revision": "0" * 40},
         "nodes": [
@@ -183,14 +215,25 @@ def test_status_report_marks_current_claim_stale_on_later_snapshot(tmp_path: Pat
         ],
         "edges": [],
     }
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
-    (tmp_path / "snapshot.txt").write_text("snapshot")
-    subprocess.run(["git", "add", "snapshot.txt"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "snapshot"], cwd=tmp_path, check=True)
-    report = status_report(graph, tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=repository, env=git_env, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, env=git_env, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, env=git_env, check=True)
+    (repository / "snapshot.txt").write_text("snapshot")
+    subprocess.run(["git", "add", "snapshot.txt"], cwd=repository, env=git_env, check=True)
+    subprocess.run(["git", "commit", "-qm", "snapshot"], cwd=repository, env=git_env, check=True)
+    report = status_report(graph, repository)
     assert report[report.index("Stale nodes/edges:") + 1] == "  req:R"
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=parent,
+            env=clean_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == parent_head
+    )
 
 
 def test_validator_requires_edge_provenance_fields() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -13,12 +14,29 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "doorstop-edit-migration-traceability/1"
+_GIT_LOCAL_ENV = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_PREFIX",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
+
+def _git_env() -> dict[str, str]:
+    """Prevent inherited hook Git overrides from redirecting repository queries."""
+    env = os.environ.copy()
+    for key in _GIT_LOCAL_ENV:
+        env.pop(key, None)
+    return env
 
 
 def rev(root: Path) -> str:
     try:
         return subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+            ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True, env=_git_env()
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return "unknown"
@@ -29,7 +47,7 @@ def build(root: Path = ROOT, generated_at: str | None = None) -> dict[str, Any]:
     clean = False
     try:
         clean = not subprocess.run(
-            ["git", "status", "--porcelain"], cwd=root, check=True, capture_output=True, text=True
+            ["git", "status", "--porcelain"], cwd=root, check=True, capture_output=True, text=True, env=_git_env()
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         pass
@@ -397,7 +415,7 @@ def status_report(graph: dict[str, Any], root: Path = ROOT) -> list[str]:
     snapshot = graph.get("repository", {}).get("revision") if isinstance(graph.get("repository"), dict) else None
     try:
         clean = not subprocess.run(
-            ["git", "status", "--porcelain"], cwd=root, check=True, capture_output=True, text=True
+            ["git", "status", "--porcelain"], cwd=root, check=True, capture_output=True, text=True, env=_git_env()
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         clean = False

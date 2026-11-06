@@ -59,8 +59,13 @@ if not result_directory_ready:
     editor.quit()
     raise SystemExit(9)
 editor.quit()
-run.cleanup_event.wait(5)
+cleanup_deadline = time.monotonic() + 8
+while service._active is not None and time.monotonic() < cleanup_deadline:
+    app.processEvents()
+    time.sleep(0.01)
 app.processEvents()
+if service._active is not None:
+    raise SystemExit('validation cleanup did not reach a terminal state')
 process_reaped = run.owner.supervisor_reaped
 print(f"validation_helper_reaped {process_reaped}", flush=True)
 if not process_reaped:
@@ -74,6 +79,10 @@ print("shutdown_returned", flush=True)
 
 
 def _make_blocking_validator_project(root: Path) -> None:
+    git_env = os.environ.copy()
+    git_env.pop("GIT_DIR", None)
+    git_env.pop("GIT_WORK_TREE", None)
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, env=git_env)
     document = root / "REQ-A"
     document.mkdir(parents=True)
     (document / ".doorstop.yml").write_text(
@@ -190,8 +199,11 @@ if len(sys.argv) > 3 and sys.argv[3] == 'direct':
     import doorstop_edit.validation_service as module
     module.os.killpg = lambda pgid, sig: os.kill(pgid, sig)
 service.shutdown()
-run.cleanup_event.wait(5)
+deadline = time.monotonic() + 8
+while service._active is not None and time.monotonic() < deadline:
+    app.processEvents(); time.sleep(.01)
 app.processEvents()
+if service._active is not None: raise SystemExit('cleanup did not reach a terminal state')
 limit = time.monotonic() + 3
 def gone(pid):
     try: os.kill(pid, 0)
