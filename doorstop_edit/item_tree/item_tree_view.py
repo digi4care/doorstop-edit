@@ -23,6 +23,7 @@ logger = logging.getLogger("gui")
 
 class ItemTreeView:
     UID_COLUMN = 2
+    INVALID_ITEM_ROLE = Qt.ItemDataRole.UserRole + 1
 
     def __init__(
         self,
@@ -165,12 +166,12 @@ class ItemTreeView:
             invalid_row.setText(1, f"✕ {uid} · Unable to load item")
             invalid_row.setData(1, CustomColorItemDelegate.STYLED_ITEM_ROLE, (None, Theme.DANGER_COLOR, ""))
             invalid_row.setData(self.UID_COLUMN, Qt.ItemDataRole.UserRole, uid)
+            invalid_row.setData(self.UID_COLUMN, self.INVALID_ITEM_ROLE, True)
+            invalid_row.setFlags(invalid_row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             messages = self._validation_findings.get(uid, [])
             invalid_row.setToolTip(
-                1, "\n".join(f"{f.severity.capitalize()}: {f.message}" for f in messages) or load_error
+                1, "\n".join([load_error, *(f"{f.severity.capitalize()}: {f.message}" for f in messages)])
             )
-            if uid in self._selected_item_uids:
-                selected.append(invalid_row)
             orphans.append(invalid_row)
 
         return selected, orphans
@@ -178,6 +179,8 @@ class ItemTreeView:
     def update_selected_items(self, items: List[doorstop.Item]) -> None:
         for w_item in self._tree_widget.selectedItems():
             uid = w_item.data(ItemTreeView.UID_COLUMN, Qt.ItemDataRole.UserRole)
+            if self._doorstop_data.get_item_load_error(uid) is not None:
+                continue
             for item in items:
                 if item.uid == uid:
                     self._tree_widget.openPersistentEditor(w_item)
@@ -213,7 +216,9 @@ class ItemTreeView:
             self._selected_document_name = None
             return
 
-        selected_w_items, top_level_w_items = self._build(build_item_level_tree(doc))
+        selected_w_items, top_level_w_items = self._build(
+            build_item_level_tree(doc, self._doorstop_data.get_item_load_error)
+        )
 
         self._tree_widget.insertTopLevelItems(0, top_level_w_items)
         if notify_change:
@@ -223,12 +228,23 @@ class ItemTreeView:
 
     @Slot(QTreeWidgetItem, int)
     def _on_item_pressed(self, item: QTreeWidgetItem, _2: int) -> None:
+        uid = item.data(self.UID_COLUMN, Qt.ItemDataRole.UserRole)
+        if item.data(self.UID_COLUMN, self.INVALID_ITEM_ROLE) or (
+            self._doorstop_data.get_item_load_error(uid) is not None
+        ):
+            return
         self.notify_change = True
         self._set_selection()
 
     def _set_selection(self) -> None:
         items = self._tree_widget.selectedItems()
-        item_uids = [i.data(ItemTreeView.UID_COLUMN, Qt.ItemDataRole.UserRole) for i in items]
+        item_uids = [
+            uid
+            for i in items
+            if not i.data(self.UID_COLUMN, self.INVALID_ITEM_ROLE)
+            if (uid := i.data(self.UID_COLUMN, Qt.ItemDataRole.UserRole)) is not None
+            and self._doorstop_data.get_item_load_error(uid) is None
+        ]
         self._selected_item_uids = item_uids
         if self.notify_change and len(self._selected_item_uids) > 0:
             self._signals.view_item.emit(item_uids[0], False)
@@ -244,13 +260,15 @@ class ItemTreeView:
         self._update(notify_change=False)
 
     def _on_delete_item_button_clicked(self, item_uid: str) -> None:
+        if self._doorstop_data.get_item_load_error(item_uid) is not None:
+            return
         if not ConfirmDialog.ask(self._tree_widget, f"Do you really want to delete item with UID '{item_uid}'?"):
             return
 
         item = self._doorstop_data.find_item(item_uid, self._selected_document_name)
         if item is None:
             return
-        self._doorstop_data.delete_item(item_uid)
+        item.delete()
         self._update()
 
     def _prepare_context_menu(self, pos: QPoint) -> None:
@@ -290,9 +308,14 @@ class ItemTreeView:
 
         item_uid: Optional[str] = None
         item_actions: List[QAction] = []
+        invalid_row = False
         if w_item is not None:
             item_uid = w_item.data(self.UID_COLUMN, Qt.ItemDataRole.UserRole)
+            invalid_row = bool(w_item.data(self.UID_COLUMN, self.INVALID_ITEM_ROLE)) or (
+                item_uid is not None and self._doorstop_data.get_item_load_error(item_uid) is not None
+            )
 
+        if item_uid is not None and not invalid_row:
             delete_action = QAction(QIcon(":/icons/trash-can"), "Delete Item", self._tree_widget)
             delete_action.setCheckable(False)
             delete_action.triggered.connect(
@@ -316,7 +339,8 @@ class ItemTreeView:
         add_action.triggered.connect(lambda checked=False, uid=item_uid: self._signals.add_item.emit(uid))
 
         actions = []
-        actions.append(add_action)
+        if not invalid_row:
+            actions.append(add_action)
         actions.append(show_inactive_action)
         actions.append(reload_action)
         actions.append(expand_action)

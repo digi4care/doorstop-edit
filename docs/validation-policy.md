@@ -12,10 +12,11 @@ Item edits are automatically saved after 700 ms without further typing. Validati
 save completes, not on every keystroke. The explicit action lets users request a fresh whole-project
 check without making another edit.
 
-The duration of validation on large projects has not been measured. MVP 3 should verify that
-validation does not block editing unacceptably and avoid overlapping/redundant runs if saves arrive
-while a check is in progress. This policy does not define how external file changes affect the
-freshness of displayed results.
+Validation runs in a helper process so it does not block editing; large-project duration has not been
+measured. Requests that arrive while a run is active coalesce into one rerun. Content revisions and
+project roots are checked before results are displayed, so results from an older edit or a previous
+project are ignored. External file changes update the revision and request a fresh check; this policy
+does not claim a fixed upper bound for detecting or validating those changes.
 
 ## MVP 3 feedback
 
@@ -38,6 +39,9 @@ effects already performed by a custom validator cannot be undone. Processes spaw
 are not guaranteed to be stopped. If the wait expires and the app exits before the daemon reaper can
 remove the helper's private temporary result directory, that directory may remain in the system temp
 directory; this does not delay shutdown.
+There is no runtime timeout: a hung validator occupies the active validation indefinitely, and later
+validation requests coalesce behind it and cannot run until the application closes (which terminates
+the helper using the bounded shutdown procedure above).
 Document and item hooks record boundaries while the generator yields, so built-in and extension item
 findings can be associated with the item being checked. Document-wide checks, including skipped and
 duplicate levels, remain unassociated rather than guessing an item from their text. A failed check

@@ -158,7 +158,8 @@ class ItemRenderer:
             item_text = "\n".join(item.text.splitlines()[1:])
         else:
             item_text = item.text
-        rows.append(("text", add_fragement_proxy(item_text) or ""))
+        text_fragment = add_fragement_proxy(item_text)
+        rows.append(("text", "" if text_fragment is None else text_fragment))
         if item.document and item.document.publish:
             for attr in item.document.publish:
                 if attr in [row[0] for row in rows]:
@@ -167,7 +168,8 @@ class ItemRenderer:
                 if val is None:
                     continue
                 if isinstance(val, str) and len(val) > 0:
-                    rows.append((attr, add_fragement_proxy(val) or ""))
+                    fragment = add_fragement_proxy(val)
+                    rows.append((attr, "" if fragment is None else fragment))
                 elif isinstance(val, bool):
                     rows.append((attr, str(val)))
 
@@ -195,16 +197,14 @@ class ItemRenderer:
 
 
 class RenderWorker(QThread):
-    """Concurrent worker for generating HTML from markdown.
+    """Concurrent worker for generating HTML from markdown."""
 
-    Rendering can sometimes be a bit slow, especially if it contains plantUML.
-    """
-
-    result_ready = Signal(str, str, name="result_ready")
+    # Widgets API: batch generation is supplied by the caller.
+    result_ready = Signal(str, str, int, name="result_ready")
+    batch_finished = Signal(int, name="batch_finished")
+    # QML API: request IDs are allocated by render() and tag every signal.
     progress = Signal(int, name="progress")
     error = Signal(str, name="error")
-    # Tagged signals let replaceable pages discard queued results from older requests.
-    # Preserve the original signals for the Widgets frontend.
     result_tagged = Signal(int, str, str)
     progress_tagged = Signal(int, int)
     error_tagged = Signal(int, str)
@@ -212,17 +212,15 @@ class RenderWorker(QThread):
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
-
         self.plantuml_cache = tempfile.gettempdir()
-
         self.mutex = QMutex()
         self.condition = QWaitCondition()
         self.abort = False
         self.change = 0
         self.restart = False
-
         self.items: List[Tuple[doorstop.Item, int]] = []
         self.root: Path = Path()
+        self.generation = 0
 
     def destroy(self) -> None:
         crash_log.record("render.destroy.begin")
@@ -233,68 +231,73 @@ class RenderWorker(QThread):
         crash_log.record("render.destroy.end")
 
     @time_function("render")
-    def render(self, items: List[Tuple[doorstop.Item, int]], root: Path, partial: bool) -> int:
-        """Render HTML from doorstop items.
-
-        Args:
-            items: Items to render HTML from.
-            root: File system path to document root. Needed to load images etc. correctly.
-        """
+    def render(
+        self, items: List[Tuple[doorstop.Item, int]], root: Path, partial: bool, generation: Optional[int] = None
+    ) -> int:
+        """Queue a render; optional generation is the Widgets batch identifier."""
         with QMutexLocker(self.mutex):
             self.items = items
             self.root = root
             self.partial = partial
             self.change += 1
             request = self.change
+            self.generation = request if generation is None else generation
             self.restart = True
             self.condition.wakeOne()
-
-        crash_log.record("render.request", change=self.change, item_count=len(items), partial=partial)
-
+        crash_log.record("render.request", change=request, item_count=len(items), partial=partial)
         if not self.isRunning():
             self.start(QThread.Priority.NormalPriority)
         return request
 
     def _on_progress(self, p: int) -> None:
-        crash_log.record("render.progress.emit.begin", percentage=p)
-        try:
-            self.progress.emit(p)
-        finally:
-            crash_log.record("render.progress.emit.end", percentage=p)
+        self.progress.emit(p)
+
+    def _is_current(self, request: int) -> bool:
+        with QMutexLocker(self.mutex):
+            return not self.abort and self.change == request
+
+    def _abort_requested(self) -> bool:
+        return self.abort
 
     def run(self) -> None:
         crash_log.record("render.worker.start")
-        item_renderer = ItemRenderer(self._on_progress, self.error.emit)
+        item_renderer = ItemRenderer(self._on_progress)
         last_change = 0
         while True:
             with QMutexLocker(self.mutex) as qm:
-                if self.abort:
+                if self._abort_requested():
                     crash_log.record("render.worker.stop", reason="abort")
                     return
                 if self.change == last_change:
                     self.condition.wait(qm.mutex())
-                self.restart = False
+                if self._abort_requested():
+                    return
                 last_change = self.change
-
+                request = last_change
+                generation = self.generation
                 items = self.items.copy()
                 partial = self.partial
                 root = Path(self.root)
 
             def report_progress(p: int) -> None:
-                self._on_progress(p)
-                self.progress_tagged.emit(last_change, p)
+                if self._is_current(request):
+                    self.progress.emit(p)
+                    self.progress_tagged.emit(request, p)
 
             def report_error(detail: str) -> None:
-                self.error.emit(detail)
-                self.error_tagged.emit(last_change, detail)
+                if self._is_current(request):
+                    self.error.emit(detail)
+                    self.error_tagged.emit(request, detail)
 
             item_renderer.progress_cb = report_progress
             item_renderer.error_cb = report_error
             for uid, content in item_renderer.process(root=str(root), partial=partial, items=items):
-                crash_log.record("render.result_ready.emit.begin", uid=uid)
-                try:
-                    self.result_ready.emit(uid, content)
-                    self.result_tagged.emit(last_change, uid, content)
-                finally:
-                    crash_log.record("render.result_ready.emit.end", uid=uid)
-            self.finished_tagged.emit(last_change)
+                if not self._is_current(request):
+                    break
+                self.result_ready.emit(uid, content, generation)
+                self.result_tagged.emit(request, uid, content)
+            # A superseded batch is not complete for either consumer. Its replacement
+            # emits both completion signals once its own results have been delivered.
+            if self._is_current(request):
+                self.batch_finished.emit(generation)
+                self.finished_tagged.emit(request)

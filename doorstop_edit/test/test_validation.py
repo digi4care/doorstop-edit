@@ -4,6 +4,7 @@ from typing import Any
 from unittest.mock import patch
 
 import doorstop
+import pytest
 from doorstop import settings as doorstop_settings
 
 from doorstop_edit.doorstop_data import ValidationFinding, collect_validation, configure_validation_policy
@@ -79,3 +80,16 @@ def test_malformed_item_is_attributed_and_remaining_checks_are_explicit(tmp_path
 
     assert any(f.severity == "error" and f.item_uid == "REQ-A-001" and "YAML" in f.message for f in findings)
     assert any(f.item_uid is None and "not run" in f.message for f in findings)
+
+
+@pytest.mark.parametrize("malformed", ["level: bad\n", "references: null\n"])
+def test_doorstop_item_load_exceptions_are_attributed(tmp_path: Path, malformed: str) -> None:
+    configure_validation_policy()
+    generate_tree(tmp_path, 1, 2)
+    bad = next(tmp_path.rglob("REQ-A-001.yml"))
+    bad.write_text(malformed, encoding="utf-8")
+
+    findings = collect_validation(tmp_path)
+
+    assert any(f.severity == "error" and f.item_uid == "REQ-A-001" for f in findings)
+    assert any(f.severity == "info" and f.item_uid is None and "not run" in f.message for f in findings)

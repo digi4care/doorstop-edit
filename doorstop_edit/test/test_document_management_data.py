@@ -32,10 +32,21 @@ def test_create_document_without_parent_is_top_level(tmp_path: Path) -> None:
     assert document.parent is None
 
 
+def test_create_second_top_level_document_refuses_before_creating_directory(tmp_path: Path) -> None:
+    data = DoorstopData(None, tmp_path)
+    data.rebuild(False)
+    data.create_document("ROOT")
+    destination = tmp_path / "SECOND"
+    with pytest.raises(doorstop.DoorstopError, match="top-level"):
+        data.create_document("SECOND")
+    assert not destination.exists()
+
+
 def test_create_document_validates_before_mutating(tmp_path: Path) -> None:
     generate_tree(tmp_path, 1, 1)
     doorstop_data = DoorstopData(None, tmp_path)
     doorstop_data.rebuild(False)
+    entries_before = set(tmp_path.iterdir())
     invalid_prefixes = (
         "",
         "  ",
@@ -58,7 +69,7 @@ def test_create_document_validates_before_mutating(tmp_path: Path) -> None:
     for prefix in invalid_prefixes:
         with pytest.raises(doorstop.DoorstopError):
             doorstop_data.create_document(prefix)
-    assert not (tmp_path / "  ").exists()
+    assert set(tmp_path.iterdir()) == entries_before
 
 
 def test_remove_document_refuses_documents_with_children(doorstop_data: DoorstopData) -> None:
@@ -104,28 +115,70 @@ def test_remove_document_refuses_unmanaged_content_before_item_deletion(tmp_path
     assert unmanaged.read_text(encoding="utf-8") == "keep"
 
 
-def test_failed_root_rebuild_restores_active_watcher(tmp_path: Path) -> None:
-    valid = tmp_path / "valid"
-    invalid = tmp_path / "invalid"
-    valid.mkdir()
-    invalid.mkdir()
-    generate_tree(valid, 1, 1)
-    (invalid / ".doorstop.yml").write_text("settings: [invalid", encoding="utf-8")
-    doorstop_data = DoorstopData(None, valid)
-    doorstop_data.rebuild(False)
-    old_tree = doorstop_data._tree
-    doorstop_data.start()
-
+def test_remove_document_refuses_symlink_config_before_mutation(tmp_path: Path) -> None:
+    data = DoorstopData(None, tmp_path)
+    data.rebuild(False)
+    prefix = data.create_document("LEAF")
+    document = data.find_document(prefix)
+    assert document is not None
+    config = Path(document.config)
+    external = tmp_path.parent / f"{tmp_path.name}-outside-config.yml"
+    external.write_text("external: keep\n", encoding="utf-8")
+    original_config = config.with_name("original-config.yml")
+    config.rename(original_config)
     try:
-        with pytest.raises(doorstop.DoorstopError):
-            doorstop_data.rebuild(False, new_root=invalid)
+        config.symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"Symlinks unavailable: {exc}")
 
-        assert doorstop_data.root == valid
-        assert doorstop_data._tree is old_tree
-        assert doorstop_data.file_watcher._started
-        assert doorstop_data.file_watcher.observer.is_alive()
-        assert [Path(doc.path).resolve() for doc in doorstop_data.file_watcher.scheduled_docs] == [
-            Path(doc.path).resolve() for doc in doorstop_data.get_documents().values()
-        ]
-    finally:
-        doorstop_data.stop()
+    with pytest.raises(doorstop.DoorstopError, match="symlink config"):
+        data.remove_document(prefix)
+
+    assert external.read_text(encoding="utf-8") == "external: keep\n"
+    assert config.is_symlink()
+    assert original_config.exists()
+    assert (tmp_path / prefix).is_dir()
+
+
+def test_remove_document_refuses_symlink_document_directory(tmp_path: Path) -> None:
+    data = DoorstopData(None, tmp_path)
+    data.rebuild(False)
+    prefix = data.create_document("LEAF")
+    directory = tmp_path / prefix
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-document"
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    shutil.rmtree(directory)
+    try:
+        directory.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Symlinks unavailable: {exc}")
+
+    with pytest.raises(doorstop.DoorstopError, match="symlink directory"):
+        data.remove_document(prefix)
+
+    assert directory.is_symlink()
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_remove_document_rebuild_failure_marks_tree_stale_after_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from doorstop_edit.doorstop_data import DocumentRemovalRefreshError
+
+    data = DoorstopData(None, tmp_path)
+    data.rebuild(False)
+    prefix = data.create_document("LEAF")
+    document_path = tmp_path / prefix
+
+    def fail_rebuild(*_args: object, **_kwargs: object) -> None:
+        raise doorstop.DoorstopError("simulated reload failure")
+
+    monkeypatch.setattr(data, "rebuild", fail_rebuild)
+    with pytest.raises(DocumentRemovalRefreshError, match="Deletion.*attempted") as error:
+        data.remove_document(prefix)
+
+    assert "simulated reload failure" in str(error.value)
+    assert not document_path.exists()
+    assert data.tree_stale

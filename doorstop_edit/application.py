@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QPlainTextEdit,
-    QToolButton,
     QVBoxLayout,
 )
 
@@ -23,6 +22,7 @@ from doorstop_edit.app_signals import AppSignals
 from doorstop_edit.dialogs import ConfirmDialog, InfoDialog, SettingDialog
 from doorstop_edit.document_dialog import AddDocumentDialog
 from doorstop_edit.doorstop_data import (
+    DocumentRemovalRefreshError,
     DoorstopData,
 )
 from doorstop_edit.item_edit.item_edit_view import ItemEditView
@@ -64,15 +64,12 @@ class DoorstopEdit(AppSignals):
         self._validation_revision = self.doorstop_data.content_revision
         self._validation_root: Optional[Path] = None
         self._shutting_down = False
-        self.validation_action = QAction("Validate project", self.window)
+        self.validation_action = self.window.ui.menu_action_validate_project
         self.validation_action.setToolTip("Check all documents and items")
         self.validation_action.triggered.connect(self._request_validation)
-        self.window.ui.menu_file.insertAction(self.window.ui.menu_action_settings, self.validation_action)
-        self.validation_status = QToolButton(self.window)
-        self.validation_status.setObjectName("validation_status")
+        self.validation_status = self.window.ui.validation_status
         self.validation_status.setText("Validation not run")
         self.validation_status.setToolTip("Open project validation results")
-        self.window.ui.statusbar.addPermanentWidget(self.validation_status)
         self.validation_dialog = QPlainTextEdit()
         self.validation_dialog.setReadOnly(True)
         self.validation_results_dialog = QDialog(self.window)
@@ -115,11 +112,12 @@ class DoorstopEdit(AppSignals):
         self.pinned_items_view = PinnedItemsView(self, self.doorstop_data, self.window.ui.pinned_items_list)
         self.item_edit_view = ItemEditView(self, self.window.ui, self.doorstop_data)
         self.window.ui.tree_combo_box.currentIndexChanged.connect(self._on_selected_document_change)
-        self.window.ui.edit_document_button.clicked.connect(self._on_add_document_clicked)
-        self.window.ui.toolButton_2.clicked.connect(self._on_remove_document_clicked)
-        self.window.ui.toolButton_2.setEnabled(False)
-        self.window.ui.edit_document_button.setEnabled(self.doorstop_data.has_root())
+        self.window.ui.add_document_button.clicked.connect(self._on_add_document_clicked)
+        self.window.ui.remove_document_button.clicked.connect(self._on_remove_document_clicked)
+        self.window.ui.remove_document_button.setEnabled(False)
+        self.window.ui.add_document_button.setEnabled(self.doorstop_data.has_root())
         self._suppress_empty_notice = False
+        self._tree_stale = False
         self.window.ui.view_items_mode.currentTextChanged.connect(self._on_view_mode_changed)
         self.window.ui.doc_review_tool_button.clicked.connect(self._on_doc_review_all_button_clicked)
         self.window.ui.doc_clear_links_tool_button.clicked.connect(self._on_doc_clear_all_links_button_clicked)
@@ -157,6 +155,7 @@ class DoorstopEdit(AppSignals):
         crash_log.record("application.shutdown.begin")
         logger.debug("Quitting...")
         self._shutting_down = True
+        self._validation_running = False
         self.doorstop_data.stop()
         self.validation_service.shutdown()
         self.item_render_view.destroy()
@@ -189,7 +188,7 @@ class DoorstopEdit(AppSignals):
         """Reload or change used/selected document."""
         old_prefix = self.selected_document.prefix if self.selected_document else None
         self.selected_document = document
-        self.window.ui.toolButton_2.setEnabled(document is not None)
+        self.window.ui.remove_document_button.setEnabled(document is not None)
         if old_prefix != (document.prefix if document else None):
             self.item_edit_view.update_item(None)
             self.item_render_view.show(None)
@@ -242,6 +241,7 @@ class DoorstopEdit(AppSignals):
             self.doorstop_data.get_documents(),
             self.selected_document.prefix if self.selected_document else None,
             self.doorstop_data.create_document,
+            allow_top_level=not any(doc.parent is None for doc in self.doorstop_data.get_documents().values()),
         )
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.created_prefix is not None:
             index = self.window.ui.tree_combo_box.findData(dialog.created_prefix)
@@ -277,6 +277,13 @@ class DoorstopEdit(AppSignals):
         self._suppress_empty_notice = True
         try:
             self.doorstop_data.remove_document(prefix)
+        except DocumentRemovalRefreshError as exc:
+            self._mark_document_tree_stale()
+            QMessageBox.warning(
+                self.window,
+                "Document deletion may be partial",
+                f"{exc}\nThe displayed document tree may be stale. Reopen or reload the project before editing.",
+            )
         except (doorstop.DoorstopError, OSError) as exc:
             message = QMessageBox(self.window)
             message.setWindowTitle("Could not remove document")
@@ -286,6 +293,15 @@ class DoorstopEdit(AppSignals):
             message.exec()
         finally:
             self._suppress_empty_notice = False
+
+    def _mark_document_tree_stale(self) -> None:
+        self._tree_stale = True
+        self.window.ui.tree_combo_box.setEnabled(False)
+        self.window.ui.add_document_button.setEnabled(False)
+        self.window.ui.remove_document_button.setEnabled(False)
+        self.item_edit_view.update_item(None)
+        self.item_render_view.show(None)
+        self._update_item_tree(None)
 
     def _on_view_mode_changed(self, new_mode: str) -> None:
         if new_mode == "Document":
@@ -436,6 +452,8 @@ WARNING: This operation cannot be undone!
 
     @Slot(bool)
     def _on_tree_changed(self, modified_only: bool) -> None:
+        if self._tree_stale:
+            return
         if (
             self.doorstop_data.has_root()
             and len(self.doorstop_data.get_documents()) == 0
@@ -444,9 +462,11 @@ WARNING: This operation cannot be undone!
             msg = "No doorstop documents found in project root."
             InfoDialog.inform(self.window, "Empty project", msg)
 
+        if not self._tree_stale:
+            self.window.ui.tree_combo_box.setEnabled(True)
         if not modified_only:
             self._update_document_list()
-        self.window.ui.edit_document_button.setEnabled(self.doorstop_data.has_root())
+        self.window.ui.add_document_button.setEnabled(self.doorstop_data.has_root())
         if self.selected_document:
             self._update_item_tree(self.selected_document)
         self.item_edit_view.reload()
@@ -478,6 +498,8 @@ WARNING: This operation cannot be undone!
 
     @Slot(object)
     def _on_validation_run_result(self, result: ValidationRunResult) -> None:
+        if result.state != "running":
+            self._validation_running = False
         if self._shutting_down:
             return
         current_root = self.doorstop_data.root
@@ -547,8 +569,14 @@ WARNING: This operation cannot be undone!
             self._rebuild_root(new_root=Path(folder))
 
     def _rebuild_root(self, new_root: Optional[Path] = None) -> None:
+        project_changed = new_root is not None and self.doorstop_data.root != new_root
         try:
+            if project_changed:
+                self.item_edit_view.cancel_pending_save()
+                self.item_edit_view.update_item(None)
+                self.item_render_view.show(None)
             self.doorstop_data.rebuild(only_reload=False, new_root=new_root)
+            self._tree_stale = False
             # Save as last opened if rebuild succeeded. Will be default after next restart.
             self.settings.last_open_folder = str(self.doorstop_data.root)
             if self.doorstop_data.root is not None:

@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import doorstop
 
@@ -29,7 +29,9 @@ class DocumentItemLevelTree:
 
 
 @time_function("Building item level tree")
-def build_item_level_tree(document: doorstop.Document) -> DocumentItemLevelTree:
+def build_item_level_tree(
+    document: doorstop.Document, get_item_load_error: Optional[Callable[[str], Optional[str]]] = None
+) -> DocumentItemLevelTree:
     """Build a level tree for all items in a document."""
 
     def parse_level(item: doorstop.Item) -> List[int]:
@@ -46,9 +48,15 @@ def build_item_level_tree(document: doorstop.Document) -> DocumentItemLevelTree:
     root = DocumentItemLevelTree()
     for item in document:
         ptr = root
+        # After a failed reload Doorstop may still expose previously parsed fields.
+        # Check the disk-load status before reading level or any other item field.
+        load_error = get_item_load_error(str(item.uid)) if get_item_load_error is not None else None
+        if load_error is not None:
+            root.invalid_items.append((item, load_error))
+            continue
         try:
             parts = parse_level(item)
-        except doorstop.DoorstopError as exc:
+        except (doorstop.DoorstopError, ValueError) as exc:
             # Item.uid is derived from the checked filename, even if its YAML
             # is not readable; keep a row visible for validation feedback.
             root.invalid_items.append((item, str(exc)))

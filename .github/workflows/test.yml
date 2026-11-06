@@ -94,6 +94,9 @@ jobs:
           uv run --no-sync python tools/traceability.py --output "$graph"
           uv run --no-sync python tools/traceability.py --validate "$graph"
 
+      - name: Code check
+        run: uv run --no-sync python tools/check_code.py
+
       - name: Run tests (Ubuntu)
         if: ${{ matrix.os == 'Ubuntu' }}
         run: xvfb-run uv run --no-sync pytest -ra --color=yes --cov=doorstop_edit --cov-report=xml

@@ -23,6 +23,7 @@ class AddDocumentDialog(QDialog):
         prefixes: Iterable[str],
         selected_prefix: Optional[str],
         create_document: Callable[[str, Optional[str]], str],
+        allow_top_level: bool = True,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Add document")
@@ -40,7 +41,8 @@ class AddDocumentDialog(QDialog):
         self.parent_combo = QComboBox(self)
         self.parent_combo.setObjectName("document_parent")
         self.parent_combo.setAccessibleName("Parent document")
-        self.parent_combo.addItem("None — top-level", None)
+        if allow_top_level:
+            self.parent_combo.addItem("None — top-level", None)
         for prefix in prefixes:
             self.parent_combo.addItem(prefix, prefix)
         if selected_prefix is not None:

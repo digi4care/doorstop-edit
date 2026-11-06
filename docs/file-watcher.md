@@ -17,10 +17,22 @@ transient delete/move sequences at the application boundary are not verified her
 
 ## Event delivery
 
-The watcher coalesces events within a 100 ms quiet period. It delivers each distinct content-change
-filename (`True`); if the batch contains any structural event, it delivers one structural refresh
-(`False`, empty filename), which takes precedence over content-only reloads in that batch. This avoids
-using a potentially stale basename for a mixed batch. The watcher skips roots that are already missing
-when watches are scheduled and tolerates a root disappearing during scheduling. It does not itself
-guarantee that a deleted root is rediscovered or that a failed application rebuild is retried. Stopping
-cancels pending delivery; `start()` creates a fresh Watchdog observer after a stop, so restart is safe.
+The watcher coalesces events within a 100 ms quiet period and delivers one callback per batch:
+`(modified_only, paths, generation)`. `paths` contains the distinct absolute paths seen in the batch.
+If any event is structural, `modified_only` is false and the application performs one structural
+refresh; otherwise all changed item paths are reloaded together. A monotonically increasing generation
+lets the application reject callbacks queued for an earlier watch period. The watcher skips roots that
+are already missing when watches are scheduled and tolerates a root disappearing during scheduling. It
+does not itself guarantee that a deleted root is rediscovered or that a failed application rebuild is
+retried. Stopping cancels pending delivery and waits for active callbacks; restarting creates a fresh
+platform-appropriate Watchdog observer and restores the scheduled document roots.
+
+## Platform observer
+
+Windows uses Watchdog’s polling observer with a configured 100 ms interval; other
+platforms retain their native observer. Polling compares filesystem snapshots rather
+than receiving native notifications, so it adds periodic filesystem I/O proportional
+to the watched tree. Detection latency includes the polling interval, snapshot scan
+time, event debounce, and application processing; 100 ms is not a hard end-to-end
+limit. The interval is selected to target the documented sub-second refresh behavior.
+Observer replacement on restart uses the same platform-specific selection.

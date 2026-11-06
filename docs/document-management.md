@@ -9,6 +9,8 @@ as a path: reject blank input, whitespace, path separators, dot segments, platfo
 characters/reserved names, an existing prefix, or an existing destination directory before creating
 anything. The document directory is created under the project root through Doorstop. After a
 successful create, rebuild the tree, refresh the document selector, and select the new document.
+Doorstop permits only one top-level document: an empty project can create one, but a project with an
+existing root must choose a parent rather than attempting a second root.
 
 ## Removing a document
 
@@ -25,3 +27,9 @@ refuses deletion if the document directory contains entries other than its confi
 files; this prevents ordinary leftover files from causing a partial deletion. Non-document files are
 never recursively deleted. No rename or move support is included, and this feature adds no runtime
 dependencies.
+
+The application also refuses deletion through symlinked document directories, config files, or entries,
+and verifies that the directory, config, and item paths remain inside their expected project/document
+boundaries. If deletion is attempted but the subsequent tree refresh fails, deletion may already have
+changed the filesystem; the UI marks the displayed tree as potentially stale, blocks editing, and
+requires reopening or reloading the project before editing.

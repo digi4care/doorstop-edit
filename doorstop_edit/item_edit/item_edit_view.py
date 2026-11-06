@@ -288,18 +288,24 @@ class ItemEditView:
         self._update_view()
 
     def reload(self) -> None:
-        if self.item is not None and not self._doorstop_data.find_item(self.item.uid.value):
-            self.item = None
+        if self.item is not None:
+            uid = str(self.item.uid)
+            if self._doorstop_data.get_item_load_error(uid) is not None or not self._doorstop_data.find_item(uid):
+                self.item = None
         self.update_item(self.item)
 
     @time_function("Updating item in edit view")
     def update_item(self, item: Optional[doorstop.Item]) -> None:
+        self.cancel_pending_save()
         self.item = item
 
         if self.item is not None:
             self._parse_extended_attributes(self.item)
 
         self._update_view()
+
+    def cancel_pending_save(self) -> None:
+        self._save_timer.stop()
 
     def _connect_field(self, field: Field) -> None:
         if isinstance(field.widget, QLineEdit):
