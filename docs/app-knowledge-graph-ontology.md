@@ -1,6 +1,6 @@
 # App Knowledge Graph: ontology v1 en competency questions
 
-**Status:** ontwerpcontract voor Beads `.9.1`; nog geen claim van volledige implementatie of compliance.
+**Status:** goedgekeurd v1-contract; de ontology-gedreven graph en optionele QML Graph Explorer zijn geïmplementeerd onder Beads `.9.1`–`.9.5`. Dit is geen claim van volledige QML-migratiepariteit of standaardcompliance.
 **Schema:** `doorstop-edit-app-graph/1`.
 **Doel:** een optionele, in-memory projectie voor relatieverkenning, impactanalyse en live review-/suspect-link-/validatiestatus.
 
@@ -98,3 +98,16 @@ Elke node/edge/status krijgt `Provenance`: project-scoped source path (relatief 
 3. Qt integration tests: graph toggle/optional view, filters/search, selecting document/item navigates existing QML lists/editor, keyboard path and accessibility states.
 4. Latency benchmark: generated on-disk Doorstop project with pinned Python/Qt, OS and revision; at least 2,500 items across document hierarchy with representative link density. Measure initial build, local-save-to-`graphChanged`, watcher-event-to-`graphChanged`, and validation projection separately; report median/p95/max and memory. Each controlled relation/status update must appear within ≤1s; report median, p95 and maximum, with validation timing reported separately.
 5. Do not close `.9` until all three graph goals, live update target, large-project evidence and optional navigation workflow have evidence. Parent `.9` is currently dependency-blocked by open Beads `.2` and `.8`; this request starts `.9.1` and does not waive those blockers or imply overall QML parity.
+
+
+## 9. Scale, responsiveness, storage and privacy evidence
+
+**Measured fixture:** 3 generated documents, 2,502 items, 2,506 graph nodes, representative links; Python 3.11.14, Qt/PySide 6.11.3, Linux x86_64. Command: `QT_QPA_PLATFORM=offscreen uv run python tools/benchmark_app_knowledge_graph.py --samples 20 --items-per-document 834`.
+
+- Doorstop-only rebuild: 3.007 s. Graph-enabled backend open: 3.551 s; the approximate 0.544 s difference is **not causal isolation** because the sequential measurements may have different cold/warm cache effects.
+- A 10 ms Qt timer heartbeat observed a maximum 0.508 s gap during synchronous graph publication (publication itself 0.507 s). This is an event-loop stall proxy, not rendered-frame measurement. The measured implementation currently has this synchronous pause and does not claim a non-blocking UI. The user explicitly accepts this as a v1 exception; this is a measured pause, not a claim of non-blocking UI. Do not pass mutable Doorstop objects to a worker. Revisit immutable value-capture/background work if users find project-open or graph-publication pauses unacceptable or the heartbeat gap materially worsens.
+- Twenty local and twenty external controlled updates all appeared at the exact next `contentRevision` within one second. Local median/p95/max: 0.564/0.606/0.647 s; external: 0.545/0.578/0.607 s. Initial open and event-loop pause are separate measurements from this update contract.
+- Process peak RSS: 150,228,992 bytes (146,708 KiB). This is a process high-water mark, not graph-only memory and not evidence of a leak. An earlier run reported a much higher peak, not reproduced on an independent rerun; treat RSS as run/environment-specific and measure across scales/platforms before claiming memory growth.
+- The graph is derived, read-only, in-memory and rebuildable; this work adds no persistent graph/cache, database, or export. QML can access the project root and up to 500 characters of item text in graph primitives. Therefore in-memory-only does not mean non-sensitive. Revisit storage/interoperability only for a concrete use case, and revisit scale optimizations if the ≤1 s update target is exceeded, event-loop pauses become unacceptable, or measured memory grows materially with project size.
+
+These measurements are representative evidence for this synthetic fixture and environment, not a guarantee for every project or platform. The benchmark emitted a temporary-project/no-working-copy warning and watchdog inactive-emitter shutdown warnings; no resource leak was established.

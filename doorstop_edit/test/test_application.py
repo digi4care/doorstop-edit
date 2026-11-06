@@ -1,8 +1,5 @@
 import shutil
-import subprocess
-import sys
 import tempfile
-import threading
 from pathlib import Path
 from typing import Iterator
 from unittest.mock import patch
@@ -19,6 +16,7 @@ from doorstop_edit.dialogs import ConfirmDialog, InfoDialog
 from doorstop_edit.document_dialog import AddDocumentDialog
 from doorstop_edit.doorstop_data import ValidationFinding
 from doorstop_edit.ui_gen.ui_main import Ui_MainWindow
+from doorstop_edit.validation_service import ValidationRunResult
 from tools.gen_sample_tree import generate_tree
 
 
@@ -195,6 +193,29 @@ def test_open_folder(qtbot: QtBot, app: DoorstopEdit, monkeypatch: pytest.Monkey
         app._rebuild_root(new_root=tree_root)
 
 
+def _run_result(
+    app: DoorstopEdit,
+    findings: tuple[ValidationFinding, ...] | list[ValidationFinding] = (),
+    *,
+    state: str = "succeeded",
+    error: str | None = None,
+) -> ValidationRunResult:
+    root = app.doorstop_data.root
+    assert root is not None
+    now = "2026-01-01T00:00:00+00:00"
+    return ValidationRunResult(
+        str(root.resolve()),
+        app.doorstop_data.content_revision,
+        "test-run",
+        tuple(findings),
+        state,
+        now,
+        now,
+        error,
+        str(root.resolve()),
+    )
+
+
 def test_validation_action_and_tree_feedback(qtbot: QtBot, app: DoorstopEdit) -> None:
     app.window.ui.item_tree_search_input.clear()
     app.window.ui.tree_combo_box.setCurrentIndex(0)
@@ -203,7 +224,7 @@ def test_validation_action_and_tree_feedback(qtbot: QtBot, app: DoorstopEdit) ->
         ValidationFinding("error", "REQ-A: REQ-A-001: broken link", "REQ-A-001"),
         ValidationFinding("warning", "REQ-A: REQ-A-002: no text", "REQ-A-002"),
     ]
-    app._on_validation_result(app._validation_revision, result, None)
+    app._on_validation_run_result(_run_result(app, result))
 
     app.window.ui.item_tree_search_input.setText("REQ-A-001")
     row = app.window.ui.item_tree_widget.topLevelItem(0)
@@ -224,17 +245,12 @@ def test_validation_action_and_tree_feedback(qtbot: QtBot, app: DoorstopEdit) ->
 
 def test_validation_requests_coalesce_while_running(qtbot: QtBot, app: DoorstopEdit) -> None:
     qtbot.waitUntil(lambda: not app._validation_running)
-    with patch.object(app, "_start_validation") as start:
-        app._validation_running = True
-        try:
-            app._validation_requested = False
-            app._request_validation()
-            app._request_validation()
-            assert app._validation_requested is True
-            assert start.call_count == 0
-        finally:
-            app._validation_running = False
-            app._validation_requested = False
+    service = app.validation_service
+    with patch.object(service, "request") as request:
+        app._request_validation()
+        app._request_validation()
+        assert request.call_count == 2
+        assert request.call_args.args == (app.doorstop_data.root, app.doorstop_data.content_revision)
 
 
 def test_successful_item_save_requests_validation(qtbot: QtBot, app: DoorstopEdit) -> None:
@@ -249,8 +265,8 @@ def test_successful_item_save_requests_validation(qtbot: QtBot, app: DoorstopEdi
 def test_validation_failure_keeps_existing_markers(qtbot: QtBot, app: DoorstopEdit) -> None:
     qtbot.waitUntil(lambda: not app._validation_running)
     existing = [ValidationFinding("warning", "Existing warning", "REQ-A-001")]
-    app._on_validation_result(app._validation_revision, existing, None)
-    app._on_validation_result(app._validation_revision, None, "Invalid item")
+    app._on_validation_run_result(_run_result(app, existing))
+    app._on_validation_run_result(_run_result(app, (), state="failed", error="Invalid item"))
     assert app.validation_status.text() == "Validation could not complete"
     assert "Invalid item" in app.validation_dialog.toPlainText()
     app.window.ui.item_tree_search_input.setText("REQ-A-001")
@@ -485,76 +501,18 @@ def test_remove_backend_error_reports_uncertain_state(tmp_path: Path, qtbot: QtB
     assert app.doorstop_data.find_document("REQ-A") is not None
 
 
-def test_validation_temp_is_retained_while_process_runs(tmp_path: Path, qtbot: QtBot, app: DoorstopEdit) -> None:
-    qtbot.waitUntil(lambda: not app._validation_running)
-    result_dir = tmp_path / "validation-result"
-    result_dir.mkdir()
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-    app._validation_process = process
-    app._validation_temp = result_dir
+def test_validation_service_retains_temp_while_process_runs(tmp_path: Path) -> None:
+    from doorstop_edit.validation_service import ValidationService
 
-    app._cleanup_validation_result()
-
+    service = ValidationService()
+    service.request(tmp_path, 4)
+    run = service._active
+    assert run is not None
+    result_dir = run.temp_dir
     assert result_dir.exists()
-    process.kill()
-    process.wait(timeout=3)
-    app._validation_process = None
-    app._cleanup_validation_result()
-
-
-def test_validation_result_error_uses_finished_job_revision(tmp_path: Path, qtbot: QtBot, app: DoorstopEdit) -> None:
-    qtbot.waitUntil(lambda: not app._validation_running)
-    result_dir = tmp_path / "validation-result"
-    result_dir.mkdir()
-    job_revision = app._validation_revision
-    app._validation_revision += 1
-    app._validation_running = True
-    app._validation_result_received = False
-    process = subprocess.Popen([sys.executable, "-c", "pass"])
-    process.wait(timeout=3)
-    app._validation_process = process
-    app._validation_job = ("job", tmp_path, job_revision, result_dir / "missing-result.json")
-    app._validation_temp = result_dir
-    app._validation_requested = False
-    prior_status = app.validation_status.text()
-    app._process_validation_completion(process, 0)
-
-    assert app.validation_status.text() == prior_status
-    assert getattr(app, "_validation_process") is None
-
-
-def test_quit_retains_result_when_bounded_wait_reports_timeout(tmp_path: Path, qtbot: QtBot, app: DoorstopEdit) -> None:
-    qtbot.waitUntil(lambda: not app._validation_running)
-    result_dir = tmp_path / "validation-result"
-    result_dir.mkdir()
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-    app._validation_process = process
-    app._validation_temp = result_dir
-    reaper_release = threading.Event()
-    original_wait = process.wait
-    wait_calls = 0
-
-    def wait_with_controlled_timeout(timeout: float = 0.5) -> int:
-        nonlocal wait_calls
-        wait_calls += 1
-        if wait_calls == 1:
-            raise subprocess.TimeoutExpired(process.args, timeout)
-        if not reaper_release.wait(timeout=3):
-            raise RuntimeError("test did not release validator reaper")
-        return original_wait(timeout=timeout)
-
-    with (
-        patch.object(process, "wait", side_effect=wait_with_controlled_timeout),
-        patch.object(app.item_render_view, "destroy"),
-        patch.object(app.window, "close"),
-    ):
-        app.quit()
-
-    assert result_dir.exists()
-    assert getattr(app, "_validation_process") is None
-    reaper_release.set()
-    qtbot.waitUntil(lambda: not result_dir.exists(), timeout=4000)
-    assert process.poll() is not None
+    service.shutdown()
+    assert run.cleanup_event.wait(5)
+    assert result_dir.exists(), "shutdown did not process a completed helper result"
 
 
 def test_quit_marks_shutdown_before_stopping_watcher(qtbot: QtBot, app: DoorstopEdit) -> None:

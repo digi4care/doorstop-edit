@@ -1,12 +1,14 @@
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 
 import doorstop
 from PySide6 import QtCore, QtWidgets
 
+from doorstop_edit.app_knowledge_graph import RunState, build_app_knowledge_graph
 from doorstop_edit.doorstop_data import DoorstopData
 from doorstop_edit.settings import PersistentSetting
+from doorstop_edit.validation_service import ValidationRunResult, ValidationService
 
 logger = logging.getLogger("gui")
 
@@ -18,6 +20,7 @@ class QmlBackend(QtCore.QObject):
     documentsChanged = QtCore.Signal()
     itemsChanged = QtCore.Signal()
     selectedItemChanged = QtCore.Signal()
+    graphChanged = QtCore.Signal()
 
     class Settings(PersistentSetting):
         IN_GROUP = "DoorstopEdit"
@@ -38,10 +41,104 @@ class QmlBackend(QtCore.QObject):
         self._level = ""
         self._text = ""
         self._opening_project = False
+        self._graph: dict = {}
+        self._graph_generation = 0
+        self._validation: Optional[ValidationRunResult] = None
+        self._validation_service = ValidationService(self)
+        self._validation_service.result.connect(self.acceptValidationRun)
+        self._data.contentChanged.connect(self._content_changed)
         self._data.tree_changed.connect(self._tree_changed)
         self._data.item_saved.connect(self._item_saved)
         if root is not None:
             self._rebuild(root)
+
+    @QtCore.Property(dict, notify=graphChanged)
+    def appGraph(self) -> dict:
+        return dict(self._graph)
+
+    def _content_changed(self, root: str, revision: int, reason: str) -> None:
+        graph_revision = int(self._graph.get("contentRevision", -1))
+        if self._opening_project:
+            return
+        if Path(root).resolve() != Path(self._data.root or "").resolve() or revision < graph_revision:
+            return
+        self._publish_graph(reason, revision)
+        self._validation_service.request(Path(root), revision)
+
+    def _publish_graph(self, reason: str, revision: int) -> None:
+        if self._data.root is None:
+            return
+        self._graph_generation += 1
+        validation = self._validation
+        same_root = validation is not None and validation.root == str(self._data.root.resolve())
+        snapshot = build_app_knowledge_graph(
+            self._data,
+            content_revision=revision,
+            graph_generation=self._graph_generation,
+            validation_findings=validation.findings if same_root and validation is not None else None,
+            validation_run_id=validation.run_id if same_root and validation is not None else "none",
+            validation_revision=validation.revision if same_root and validation is not None else None,
+            validation_state=cast(RunState, validation.state) if same_root and validation is not None else "notRun",
+            validation_project_id=f"project:{self._data.root.resolve()}" if same_root else None,
+            validation_started_at=validation.started_at if same_root and validation is not None else None,
+            validation_completed_at=validation.completed_at if same_root and validation is not None else None,
+            validation_error=validation.error if same_root and validation is not None else None,
+            event=reason,
+        )
+        self._graph = snapshot.to_primitives()
+        self.graphChanged.emit()
+
+    def acceptValidationRun(self, result: ValidationRunResult) -> bool:
+        resolved = str(Path(result.root).resolve())
+        # ValidationService identifies projects by resolved root; graph IDs are normalized separately.
+        if (
+            resolved != str(Path(self._data.root or "").resolve())
+            or result.project_id != resolved
+            or result.revision != self._data.content_revision
+        ):
+            return False
+        if result.state == "running":
+            prior = self._validation
+            findings = prior.findings if prior is not None and prior.root == resolved else ()
+            result = ValidationRunResult(
+                result.root,
+                result.revision,
+                result.run_id,
+                findings,
+                result.state,
+                result.started_at,
+                result.completed_at,
+                result.error,
+                result.project_id,
+            )
+        elif result.state == "failed":
+            prior = self._validation
+            findings = prior.findings if prior is not None and prior.root == resolved else ()
+            result = ValidationRunResult(
+                result.root,
+                result.revision,
+                result.run_id,
+                findings,
+                result.state,
+                result.started_at,
+                result.completed_at,
+                result.error,
+                result.project_id,
+            )
+        self._validation = ValidationRunResult(
+            resolved,
+            result.revision,
+            result.run_id,
+            result.findings,
+            result.state,
+            result.started_at,
+            result.completed_at,
+            result.error,
+            result.project_id,
+        )
+        if not self._opening_project:
+            self._publish_graph("validation", result.revision)
+        return True
 
     @QtCore.Property(str, notify=projectRootChanged)
     def projectRoot(self) -> str:
@@ -109,6 +206,8 @@ class QmlBackend(QtCore.QObject):
         self._opening_project = True
         try:
             self._data.rebuild(only_reload=False, new_root=root)
+            if previous_root is not None and previous_root.resolve() != root.resolve():
+                self._validation = None
             self._data.start()
             self._selected_document = ""
             self._selected_uid = self._level = self._header = self._text = ""
@@ -120,11 +219,12 @@ class QmlBackend(QtCore.QObject):
             self.projectRootChanged.emit()
             self._status = f"Opened {root}"
             self.statusMessageChanged.emit()
+            # The service emits `running` synchronously when it starts a job. Request
+            # before the first projection so that status is included in one snapshot.
+            self._validation_service.request(root, self._data.content_revision)
+            self._publish_graph("initial-load", self._data.content_revision)
         except (doorstop.DoorstopError, OSError) as exc:
             self._data.root = previous_root
-            # DoorstopData pauses the watcher before building. A failed build leaves the old tree
-            # intact, but its directories must be rescheduled on the existing watcher.
-            self._data.file_watcher.watch(list(self._data.get_documents().values()))
             logger.exception("Unable to open project root")
             self._message(str(exc))
         finally:
@@ -187,4 +287,5 @@ class QmlBackend(QtCore.QObject):
 
     @QtCore.Slot()
     def shutdown(self) -> None:
+        self._validation_service.shutdown()
         self._data.stop()

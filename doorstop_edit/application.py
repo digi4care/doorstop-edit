@@ -1,18 +1,11 @@
 import functools
 import html
-import json
 import logging
-import shutil
-import subprocess
-import sys
-import tempfile
-import threading
-import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import doorstop
-from PySide6.QtCore import Qt, QTimer, Slot
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
@@ -31,7 +24,6 @@ from doorstop_edit.dialogs import ConfirmDialog, InfoDialog, SettingDialog
 from doorstop_edit.document_dialog import AddDocumentDialog
 from doorstop_edit.doorstop_data import (
     DoorstopData,
-    ValidationFinding,
 )
 from doorstop_edit.item_edit.item_edit_view import ItemEditView
 from doorstop_edit.item_render.item_render_view import ItemRenderView
@@ -42,11 +34,9 @@ from doorstop_edit.settings import PersistentSetting
 from doorstop_edit.theme import Theme
 from doorstop_edit.ui_gen.ui_item_viewer import Ui_ItemViewer
 from doorstop_edit.utils.version_summary import create_version_summary
+from doorstop_edit.validation_service import ValidationRunResult, ValidationService
 
 logger = logging.getLogger("gui")
-
-
-MAX_VALIDATION_RESULT_BYTES = 4 * 1024 * 1024
 
 
 class DoorstopEdit(AppSignals):
@@ -67,17 +57,12 @@ class DoorstopEdit(AppSignals):
 
         self.doorstop_data = DoorstopData(self.window, root)
         self.doorstop_data.tree_changed.connect(self._on_tree_changed)
-        self.doorstop_data.item_saved.connect(self._request_validation)
+        self.doorstop_data.contentChanged.connect(self._on_content_changed)
+        self.validation_service = ValidationService(self.window)
+        self.validation_service.result.connect(self._on_validation_run_result)
         self._validation_running = False
-        self._validation_requested = False
-        self._validation_revision = 0
+        self._validation_revision = self.doorstop_data.content_revision
         self._validation_root: Optional[Path] = None
-        self._validation_process: Optional[subprocess.Popen[bytes]] = None
-        self._validation_job: Optional[tuple[str, Path, int, Path]] = None
-        self._validation_temp: Optional[Path] = None
-        self._validation_timer = QTimer(self.window)
-        self._validation_timer.setInterval(50)
-        self._validation_timer.timeout.connect(self._poll_validation_process)
         self._shutting_down = False
         self.validation_action = QAction("Validate project", self.window)
         self.validation_action.setToolTip("Check all documents and items")
@@ -172,45 +157,11 @@ class DoorstopEdit(AppSignals):
         crash_log.record("application.shutdown.begin")
         logger.debug("Quitting...")
         self._shutting_down = True
-        self._validation_requested = False
         self.doorstop_data.stop()
-        process = self._validation_process
-        self._validation_timer.stop()
-        if process is not None and process.poll() is None:
-            try:
-                process.kill()
-            except OSError:
-                logger.exception("Could not kill validation helper")
-            try:
-                process.wait(timeout=0.5)
-            except subprocess.TimeoutExpired:
-                logger.error("Validation helper did not stop within shutdown bound; deferring artifact cleanup")
-                self._defer_validation_reap(process, self._validation_temp)
-                self._validation_process = None
-                self._validation_job = None
-                self._validation_temp = None
-            else:
-                self._validation_process = None
-                self._cleanup_validation_result()
-        else:
-            self._validation_process = None
-            self._cleanup_validation_result()
+        self.validation_service.shutdown()
         self.item_render_view.destroy()
         self.window.close()
         crash_log.record("application.shutdown.end")
-
-    @staticmethod
-    def _defer_validation_reap(process: subprocess.Popen[bytes], result_directory: Optional[Path]) -> None:
-        def reap() -> None:
-            try:
-                process.wait()
-            except OSError:
-                logger.exception("Could not reap timed-out validation helper; retaining its result artifacts")
-                return
-            if result_directory is not None:
-                shutil.rmtree(result_directory, ignore_errors=True)
-
-        threading.Thread(target=reap, name="validation-reaper", daemon=True).start()
 
     def _update_document_list(self) -> None:
         combo = self.window.ui.tree_combo_box
@@ -499,126 +450,51 @@ WARNING: This operation cannot be undone!
         if self.selected_document:
             self._update_item_tree(self.selected_document)
         self.item_edit_view.reload()
-        self._request_validation()
+
+    def _on_content_changed(self, root: str, revision: int, reason: str) -> None:
+        del reason
+        self._queue_validation(Path(root), revision)
 
     def _request_validation(self) -> None:
-        if self._shutting_down:
-            return
-        if not self.doorstop_data.has_root():
-            return
-        if self._validation_root != self.doorstop_data.root:
-            self._validation_root = self.doorstop_data.root
-            self.tree_view.set_validation_findings([])
-            self.validation_dialog.setPlainText("Checking the opened project…")
-        self._validation_revision += 1
-        if self._validation_running:
-            self._validation_requested = True
-            return
-        self._start_validation()
-
-    def _start_validation(self) -> None:
         root = self.doorstop_data.root
+        if root is not None:
+            self._queue_validation(root, self.doorstop_data.content_revision)
+
+    def _queue_validation(self, root: Optional[Path] = None, revision: Optional[int] = None) -> None:
+        if self._shutting_down or not self.doorstop_data.has_root():
+            return
+        root = root or self.doorstop_data.root
         if root is None:
             return
+        revision = self.doorstop_data.content_revision if revision is None else revision
+        if self._validation_root != root.resolve():
+            self._validation_root = root.resolve()
+            self.tree_view.set_validation_findings([])
+            self.validation_dialog.setPlainText("Checking the opened project…")
+        self._validation_revision = revision
         self._validation_running = True
-        self._validation_requested = False
-        self._validation_result_received = False
-        revision = self._validation_revision
         self.validation_status.setText("Checking project…")
-        job_id = uuid.uuid4().hex
-        directory = Path(tempfile.mkdtemp(prefix="doorstop-validation-"))
-        result_path = directory / "result.json"
-        self._validation_job = (job_id, root.resolve(), revision, result_path)
-        self._validation_temp = directory
-        try:
-            self._validation_process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "doorstop_edit.validation_helper",
-                    str(root.resolve()),
-                    str(revision),
-                    job_id,
-                    str(result_path),
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except OSError as exc:
-            self._on_validation_result(revision, None, str(exc))
-            self._validation_running = False
-            self._cleanup_validation_result()
-            if not self._shutting_down and self._validation_requested:
-                self._start_validation()
-            return
-        self._validation_timer.start()
+        self.validation_service.request(root, revision)
 
-    def _cleanup_validation_result(self) -> None:
-        process = self._validation_process
-        if process is not None and process.poll() is None:
+    @Slot(object)
+    def _on_validation_run_result(self, result: ValidationRunResult) -> None:
+        if self._shutting_down:
             return
-        if self._validation_temp is not None:
-            shutil.rmtree(self._validation_temp, ignore_errors=True)
-        self._validation_temp = None
-        self._validation_job = None
-
-    @Slot()
-    def _poll_validation_process(self) -> None:
-        process = self._validation_process
-        if process is None:
-            self._validation_timer.stop()
+        current_root = self.doorstop_data.root
+        if current_root is None or Path(result.root).resolve() != current_root.resolve():
             return
-        return_code = process.poll()
-        if return_code is not None:
-            self._validation_timer.stop()
-            self._process_validation_completion(process, return_code)
-
-    def _process_validation_completion(self, process: subprocess.Popen[bytes], return_code: int) -> None:
-        if process is not self._validation_process:
+        if result.content_revision != self.doorstop_data.content_revision:
             return
-        job = self._validation_job
-        if not self._shutting_down:
-            try:
-                if return_code != 0 or job is None:
-                    raise ValueError("Validation helper exited unexpectedly")
-                job_id, root, revision, path = job
-                if not path.is_file() or path.stat().st_size > MAX_VALIDATION_RESULT_BYTES:
-                    raise ValueError("Validation helper returned no valid result")
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if data.get("job_id") != job_id or data.get("revision") != revision or data.get("root") != str(root):
-                    raise ValueError("Validation result identity mismatch")
-                if "error" in data:
-                    self._on_validation_result(revision, None, str(data["error"]))
-                else:
-                    findings = [ValidationFinding(**item) for item in data["findings"]]
-                    self._on_validation_result(revision, findings, None)
-            except Exception as exc:
-                failed_revision = job[2] if job is not None else self._validation_revision
-                self._on_validation_result(failed_revision, None, str(exc))
-            if not self._validation_result_received:
-                self.validation_status.setText("Validation could not complete")
-                self.validation_dialog.setPlainText("Project validation could not complete. See the application log.")
-        self._finish_validation_process()
-
-    def _finish_validation_process(self) -> None:
-        self._validation_process = None
-        self._validation_running = False
-        self._cleanup_validation_result()
-        if not self._shutting_down and self._validation_requested:
-            self._start_validation()
-
-    @Slot(int, object, object)
-    def _on_validation_result(
-        self, revision: int, findings: Optional[List[ValidationFinding]], error: Optional[str]
-    ) -> None:
-        self._validation_result_received = True
-        if revision != self._validation_revision:
+        self._validation_running = result.state == "running"
+        self._validation_revision = result.content_revision
+        if result.state == "running":
+            self.validation_status.setText("Checking project…")
             return
-        if error is not None:
+        if result.state == "failed":
             self.validation_status.setText("Validation could not complete")
-            self.validation_dialog.setPlainText(f"Project validation could not complete:\n{error}")
+            self.validation_dialog.setPlainText(f"Project validation could not complete:\n{result.error}")
             return
-        assert findings is not None
+        findings = list(result.findings)
         self.tree_view.set_validation_findings(findings)
         errors = sum(f.severity == "error" for f in findings)
         warnings = sum(f.severity == "warning" for f in findings)

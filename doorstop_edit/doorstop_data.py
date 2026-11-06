@@ -121,13 +121,17 @@ class DoorstopData(QObject):
 
     tree_changed = Signal((bool))  # Called when tree changed on disk
     item_saved = Signal()
+    contentChanged = Signal(str, int, str)
+    _fileWatchEvent = Signal(bool, object, int)
 
     def __init__(self, parent: Optional[QObject], root: Optional[Path] = None) -> None:
         super().__init__(parent=parent)
         self.root = root
+        self.content_revision = 0
         self._tree: Optional[doorstop.Tree] = None
         self.item_metadata: Dict[str, ItemMetadata] = {}
         self._item_load_errors: Dict[str, str] = {}
+        self._fileWatchEvent.connect(self._process_filewatch_callback)
         self.file_watcher = FileWatcher(self._on_filewatch_callback)
 
     def has_root(self) -> bool:
@@ -143,36 +147,74 @@ class DoorstopData(QObject):
     def stop(self) -> None:
         self.file_watcher.stop()
 
-    def _on_filewatch_callback(self, modified_only: bool, filename: str) -> None:
+    def _on_filewatch_callback(self, modified_only: bool, paths: tuple[str, ...], generation: int) -> None:
+        # Watchdog invokes callbacks from its timer thread; marshal all Doorstop
+        # tree mutations and revisions onto this QObject's (GUI) thread.
+        self._fileWatchEvent.emit(modified_only, paths, generation)
+
+    @Slot(bool, object, int)
+    def _process_filewatch_callback(self, modified_only: bool, paths: object, generation: int) -> None:
+        if generation != self.file_watcher.generation or not isinstance(paths, tuple):
+            return
+        project_root = self.root.resolve() if self.root is not None else None
+        if project_root is None:
+            return
+        active_paths = tuple(path for source in paths if (path := Path(source).resolve()).is_relative_to(project_root))
+        if not active_paths:
+            return
+
         do_rebuild = False
         if modified_only:
-            item = self.find_item(Path(filename).stem)
-            if item is None:
-                do_rebuild = True
-            else:
+            for filename in active_paths:
+                if ".doorstop" in filename.name:
+                    do_rebuild = True
+                    break
+                item = self.find_item(Path(filename).stem)
+                if item is None:
+                    do_rebuild = True
+                    break
                 uid = str(item.uid)
                 try:
                     item.load(reload=True)
                 except doorstop.DoorstopError as exc:
-                    # Keep the tree available so validation can show this item.
                     self._item_load_errors[uid] = str(exc)
                     logger.warning("Unable to load %s: %s", item.uid, exc)
                 else:
                     self._item_load_errors.pop(uid, None)
-                self.tree_changed.emit(True)
-
-        if ".doorstop" in filename:
-            do_rebuild = True
-
         if not modified_only or do_rebuild:
-            self.rebuild(only_reload=modified_only)
+            self.rebuild(only_reload=modified_only, reason="watcher")
+        else:
+            self._publish_content_changed("external-edit")
+            self.tree_changed.emit(True)
 
     @Slot(bool)
     @time_function("Rebuilding document tree")
-    def rebuild(self, only_reload: bool = False, new_root: Optional[Path] = None) -> None:
+    def rebuild(self, only_reload: bool = False, new_root: Optional[Path] = None, reason: str = "rebuild") -> None:
+        previous_root = self.root
+        previous_tree = self._tree
+        previous_errors = self._item_load_errors.copy()
         if new_root is not None:
             self.root = new_root
 
+        try:
+            self._rebuild_impl(only_reload, new_root)
+        except Exception:
+            self.root = previous_root
+            self._tree = previous_tree
+            self._item_load_errors = previous_errors
+            try:
+                if previous_tree is not None:
+                    self.file_watcher.watch(list(self.get_documents().values()))
+            except Exception:
+                logger.exception("Unable to restore file watcher after failed rebuild")
+            raise
+        self._publish_content_changed(reason)
+
+    def _publish_content_changed(self, reason: str) -> None:
+        self.content_revision += 1
+        self.contentChanged.emit(str(self.root or ""), self.content_revision, reason)
+
+    def _rebuild_impl(self, only_reload: bool, new_root: Optional[Path]) -> None:
         if new_root is not None or self._tree is None or not only_reload:
             self.file_watcher.pause()  # Dont trigger any events while rebuilding
             self._tree = doorstop.build(cwd=str(self.root), root=str(self.root))
@@ -242,8 +284,7 @@ class DoorstopData(QObject):
             canonical = str(document.prefix)
         except OSError as exc:
             raise doorstop.DoorstopError(f"Unable to create document {prefix}: {exc}") from exc
-        finally:
-            self.rebuild()
+        self.rebuild()
         return canonical
 
     def remove_document(self, prefix: str) -> None:
@@ -264,16 +305,14 @@ class DoorstopData(QObject):
         if unmanaged:
             names = ", ".join(entry.name for entry in unmanaged)
             raise doorstop.DoorstopError(f"Cannot remove document {prefix}; unmanaged entries: {names}")
-        try:
-            document.delete()
-            # Doorstop only removes the config through VCS when ADDREMOVE_FILES is enabled.
-            # The application disables that setting to avoid implicit VCS operations.
-            if config_path.exists():
-                config_path.unlink()
-            if path.exists():
-                path.rmdir()
-        finally:
-            self.rebuild()
+        document.delete()
+        # Doorstop only removes the config through VCS when ADDREMOVE_FILES is enabled.
+        # The application disables that setting to avoid implicit VCS operations.
+        if config_path.exists():
+            config_path.unlink()
+        if path.exists():
+            path.rmdir()
+        self.rebuild()
 
     def find_item(self, item_uid: str, document: Union[str, doorstop.Document, None] = None) -> Optional[doorstop.Item]:
         doc: Optional[doorstop.Document] = None
@@ -332,6 +371,7 @@ class DoorstopData(QObject):
 
         self.file_watcher.resume()
         self.item_saved.emit()
+        self._publish_content_changed("save")
 
     def get_original_data(self, item: doorstop.Item) -> Optional[str]:
         """None means no change."""
@@ -354,9 +394,22 @@ class DoorstopData(QObject):
             return
 
         p = Path(item.path)
-        p.write_text(orig, encoding="utf-8")
-        item.load(reload=True)  # Reload item to mirror content on disk.
+        self.file_watcher.pause()
+        try:
+            p.write_text(orig, encoding="utf-8")
+            item.load(reload=True)  # Reload item to mirror content on disk.
+        finally:
+            self.file_watcher.resume()
         self.item_metadata[str(item.uid)].original = None
+        self.item_saved.emit()
+        self._publish_content_changed("restore")
+
+    def delete_item(self, uid: str) -> None:
+        item = self.find_item(uid)
+        if item is None:
+            raise doorstop.DoorstopError(f"Unknown item: {uid}")
+        item.delete()
+        self.rebuild(only_reload=False, reason="delete")
 
     def get_last_change(self, item: doorstop.Item) -> int:
         """Get timestamp of items last change/save.

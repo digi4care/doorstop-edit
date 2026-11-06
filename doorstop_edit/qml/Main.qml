@@ -17,6 +17,54 @@ ApplicationWindow {
     property string editorUid: ""
     property bool externalConflict: false
     property bool saveInProgress: false
+
+    function toggleGraph() {
+        if (graphDrawer.opened) {
+            graphDrawer.close()
+        } else {
+            const focused = root.activeFocusItem
+            graphDrawer.returnFocusItem = focused && focused.activeFocusOnTab
+                                         ? focused : graphToggleButton
+            graphDrawer.open()
+        }
+    }
+
+    function openGraphNode(node) {
+        if (!node || (node.type !== "Item" && node.type !== "Document"))
+            return
+        const prefix = node.type === "Document" ? node.prefix
+                        : String(node.documentId || "").replace(/^document:/, "")
+        if (!prefix)
+            return
+        confirmLeaving(function() {
+            // Synchronize the original lists, then use the existing backend selection path.
+            const documents = backend.documents || []
+            for (let i = 0; i < documents.length; ++i) {
+                if (documents[i].prefix === prefix) {
+                    documentList.currentIndex = i
+                    break
+                }
+            }
+            if (selectedDocumentPrefix !== prefix || node.type === "Document") {
+                selectedDocumentPrefix = prefix
+                itemList.currentIndex = -1
+                backend.selectDocument(prefix)
+            }
+            if (node.type === "Item") {
+                const items = backend.items || []
+                for (let i = 0; i < items.length; ++i) {
+                    if (items[i].uid === node.uid) {
+                        itemList.currentIndex = i
+                        break
+                    }
+                }
+                backend.selectItem(node.uid)
+            }
+            graphDrawer.navigatingToEditor = true
+            graphDrawer.navigationFocusTarget = node.type === "Item" ? headerField : documentList
+            graphDrawer.close()
+        })
+    }
     readonly property var selection: backend.selectedItem || ({})
     readonly property bool hasSelection: !!selection.uid
     readonly property bool isDirty: hasSelection
@@ -114,6 +162,60 @@ ApplicationWindow {
         onActivated: root.saveCurrent()
     }
 
+    Shortcut {
+        sequence: "Ctrl+G"
+        context: Qt.ApplicationShortcut
+        onActivated: root.toggleGraph()
+    }
+
+    Drawer {
+        id: graphDrawer
+        objectName: "graphDrawer"
+        edge: Qt.RightEdge
+        modal: false
+        interactive: false
+        width: Math.min(root.width - 12, 680)
+        height: root.height
+        padding: 0
+        property var returnFocusItem: null
+        property bool navigatingToEditor: false
+        property var navigationFocusTarget: null
+        onClosed: {
+            const destination = returnFocusItem
+            const openingEditor = navigatingToEditor
+            const editorTarget = navigationFocusTarget
+            navigatingToEditor = false
+            navigationFocusTarget = null
+            returnFocusItem = null
+            // Popup restores its focus after emitting closed. Restore our
+            // previous control on the next event-loop turn instead.
+            Qt.callLater(function() {
+                if (graphDrawer.opened) return
+                if (openingEditor) {
+                    if (editorTarget && editorTarget.enabled)
+                        editorTarget.forceActiveFocus()
+                    else
+                        graphToggleButton.forceActiveFocus()
+                    return
+                }
+                if (destination && destination !== root
+                        && destination.visible && destination.enabled)
+                    destination.forceActiveFocus()
+                else
+                    graphToggleButton.forceActiveFocus()
+            })
+        }
+        GraphExplorer {
+            objectName: "graphExplorer"
+            anchors.fill: parent
+            active: graphDrawer.opened
+            initialDocumentPrefix: root.selectedDocumentPrefix
+            graph: active ? (backend.appGraph || ({})) : ({})
+            onCloseRequested: graphDrawer.close()
+            onActivateNode: function(node) { root.openGraphNode(node) }
+        }
+    }
+
     Dialog {
         id: discardDialog
         property var pendingAction: null
@@ -172,11 +274,20 @@ ApplicationWindow {
                     root.confirmLeaving(function() { backend.openProject(path) })
                 }
             }
-            Button {
-                objectName: "browseButton"
-                text: "Browse…"
-                Accessible.name: "Choose project folder"
-                onClicked: root.confirmLeaving(function() { backend.openProjectPicker() })
+            RowLayout {
+                Button {
+                    objectName: "browseButton"
+                    text: "Browse…"
+                    Accessible.name: "Choose project folder"
+                    onClicked: root.confirmLeaving(function() { backend.openProjectPicker() })
+                }
+                Button {
+                    id: graphToggleButton
+                    objectName: "graphToggleButton"
+                    text: graphDrawer.opened ? "Close graph" : "Graph"
+                    Accessible.name: graphDrawer.opened ? "Close graph, Ctrl+G" : "Explore project graph, Ctrl+G"
+                    onClicked: root.toggleGraph()
+                }
             }
         }
 

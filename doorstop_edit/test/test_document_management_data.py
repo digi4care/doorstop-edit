@@ -102,3 +102,30 @@ def test_remove_document_refuses_unmanaged_content_before_item_deletion(tmp_path
 
     assert copied_item.exists()
     assert unmanaged.read_text(encoding="utf-8") == "keep"
+
+
+def test_failed_root_rebuild_restores_active_watcher(tmp_path: Path) -> None:
+    valid = tmp_path / "valid"
+    invalid = tmp_path / "invalid"
+    valid.mkdir()
+    invalid.mkdir()
+    generate_tree(valid, 1, 1)
+    (invalid / ".doorstop.yml").write_text("settings: [invalid", encoding="utf-8")
+    doorstop_data = DoorstopData(None, valid)
+    doorstop_data.rebuild(False)
+    old_tree = doorstop_data._tree
+    doorstop_data.start()
+
+    try:
+        with pytest.raises(doorstop.DoorstopError):
+            doorstop_data.rebuild(False, new_root=invalid)
+
+        assert doorstop_data.root == valid
+        assert doorstop_data._tree is old_tree
+        assert doorstop_data.file_watcher._started
+        assert doorstop_data.file_watcher.observer.is_alive()
+        assert [Path(doc.path).resolve() for doc in doorstop_data.file_watcher.scheduled_docs] == [
+            Path(doc.path).resolve() for doc in doorstop_data.get_documents().values()
+        ]
+    finally:
+        doorstop_data.stop()

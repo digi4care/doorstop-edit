@@ -250,7 +250,7 @@ class ItemTreeView:
         item = self._doorstop_data.find_item(item_uid, self._selected_document_name)
         if item is None:
             return
-        item.delete()
+        self._doorstop_data.delete_item(item_uid)
         self._update()
 
     def _prepare_context_menu(self, pos: QPoint) -> None:

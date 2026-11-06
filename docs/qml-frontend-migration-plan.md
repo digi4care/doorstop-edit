@@ -89,7 +89,7 @@ De uitvoerbare user stories en acceptatiecriteria zijn vastgelegd in Beads. De t
 
 Broninspectie: `doorstop_edit/main.py`, `main_window.py`, `application.py`, `item_tree/item_tree_view.py`, `item_edit/item_edit_view.py`, `item_render/item_render_view.py`, `render_worker.py`, `pinned_items/pinned_items_view.py`, `doorstop_data.py`, `utils/file_watcher.py`, `dialogs/`, `settings.py`, `ui/main.ui`, `pyproject.toml`, CI en tests. Context: `docs/exploration.md`, `docs/validation-policy.md`, `docs/file-watcher.md`, `docs/document-management.md`, `docs/document-deletion-policy.md`, `docs/requirements-traceability.md` en de brainstorm van 2026-11-05. Volledige handmatige GUI-acceptatietest is niet uitgevoerd. Geen applicatiecode is door dit plan aangepast.
 
-Uitgevoerde analyse en pariteitsbaseline: [`docs/qml-frontend-analysis.md`](qml-frontend-analysis.md). Deze bevat het capability-register, state/event-flow, bestaande REQ/test-mapping, NOT RUN GUI-cases, architectural options en vastgelegde graph-besluiten.
+Uitgevoerde analyse en pariteitsbaseline: [`docs/qml-frontend-analysis.md`](qml-frontend-analysis.md). Het huidige QObject/property/slot-, fout- en threadcontract staat in [`docs/qml-python-contract.md`](qml-python-contract.md). Deze analyse bevat het capability-register, state/event-flow, bestaande REQ/test-mapping, NOT RUN GUI-cases, architectural options en vastgelegde graph-besluiten.
 
 ## Beads-koppelingen
 
