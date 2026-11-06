@@ -43,6 +43,35 @@ ApplicationWindow {
                + (validationOutdated ? " · Prior findings outdated" : "")
     }
 
+    function showPreviewPopup(renderer, title) {
+        const popup = previewPopupComponent.createObject(root, {"popupBridge": renderer, "popupTitle": title})
+        if (popup) popup.show()
+        else previewRenderer.closePopup(renderer)
+    }
+
+    Component {
+        id: previewPopupComponent
+        Window {
+            width: 720
+            height: 550
+            minimumWidth: 360
+            minimumHeight: 260
+            property var popupBridge
+            property string popupTitle: "Preview"
+            title: popupTitle
+            color: "#14202b"
+            RenderPreview { anchors.fill: parent; anchors.margins: 12; renderBridge: popupBridge }
+            Connections {
+                target: popupBridge
+                function onPopupCreated(renderer, title) { root.showPreviewPopup(renderer, title) }
+            }
+            onClosing: Qt.callLater(function() {
+                popupBridge.dispose()
+                destroy()
+            })
+        }
+    }
+
     function openPendingPanel() {
         const next = pendingPanel
         pendingPanel = ""
@@ -198,6 +227,34 @@ ApplicationWindow {
     Component.onCompleted: {
         projectPath.text = backend.projectRoot || ""
         loadSelection()
+    }
+
+    Connections {
+        target: typeof previewRenderer !== "undefined" ? previewRenderer : null
+        function onPopupCreated(renderer, title) { root.showPreviewPopup(renderer, title) }
+        function onItemRequested(uid, prefix) {
+            root.confirmLeaving(function() {
+                if (root.selectedDocumentPrefix !== prefix) {
+                    root.selectedDocumentPrefix = prefix
+                    const documents = backend.documents || []
+                    for (let i = 0; i < documents.length; ++i) {
+                        if (documents[i].prefix === prefix) {
+                            documentList.currentIndex = i
+                            break
+                        }
+                    }
+                    backend.selectDocument(prefix)
+                }
+                const items = backend.items || []
+                for (let i = 0; i < items.length; ++i) {
+                    if (items[i].uid === uid) {
+                        itemList.currentIndex = i
+                        break
+                    }
+                }
+                backend.selectItem(uid)
+            })
+        }
     }
 
     Connections {
@@ -615,6 +672,18 @@ ApplicationWindow {
                                 })
                             }
                             onClicked: activate()
+                            onPressAndHold: documentMenu.popup()
+                            TapHandler {
+                                acceptedButtons: Qt.RightButton
+                                onTapped: documentMenu.popup()
+                            }
+                            Menu {
+                                id: documentMenu
+                                MenuItem {
+                                    text: "Open document in preview window"
+                                    onTriggered: if (previewRenderer) previewRenderer.openPopupDocument(documentDelegate.prefix)
+                                }
+                            }
                             Rectangle {
                                 objectName: "documentFocusOutline"
                                 anchors.fill: parent
@@ -705,6 +774,18 @@ ApplicationWindow {
                                 })
                             }
                             onClicked: activate()
+                            onPressAndHold: itemMenu.popup()
+                            TapHandler {
+                                acceptedButtons: Qt.RightButton
+                                onTapped: itemMenu.popup()
+                            }
+                            Menu {
+                                id: itemMenu
+                                MenuItem {
+                                    text: "Open item in preview window"
+                                    onTriggered: if (previewRenderer) previewRenderer.openPopupItem(itemDelegate.uid)
+                                }
+                            }
                             Rectangle {
                                 objectName: "itemFocusOutline"
                                 anchors.fill: parent
@@ -817,6 +898,19 @@ ApplicationWindow {
                             Accessible.name: "Save selected item"
                             onClicked: root.saveCurrent()
                         }
+                    }
+                    Label {
+                        text: "Preview"
+                        visible: root.hasSelection
+                        font.bold: true
+                    }
+                    RenderPreview {
+                        objectName: "renderPreview"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 220
+                        Layout.minimumHeight: 80
+                        visible: root.hasSelection
+                        renderBridge: typeof previewRenderer !== "undefined" ? previewRenderer : null
                     }
                 }
             }

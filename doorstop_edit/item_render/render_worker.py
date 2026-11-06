@@ -45,8 +45,9 @@ class ProgressTracker:
 
 
 class ItemRenderer:
-    def __init__(self, progress_cb: Callable[[int], None]) -> None:
+    def __init__(self, progress_cb: Callable[[int], None], error_cb: Optional[Callable[[str], None]] = None) -> None:
         self.progress_cb = progress_cb
+        self.error_cb = error_cb
         self.progress: Optional[ProgressTracker] = None
         self.md: Optional[FragmentedMarkdown] = None
         self.cache: Dict[str, int] = {}
@@ -100,7 +101,9 @@ class ItemRenderer:
             self.progress.progress_one()
             self.progress_cb(self.progress.get())
         except Exception as e:
-            logger.error("Failed to process markdown:", e)
+            logger.error("Failed to process markdown: %s", e)
+            if self.error_cb is not None:
+                self.error_cb(str(e))
 
     def _reset_state(self) -> None:
         self.prev_refs = {}
@@ -199,6 +202,13 @@ class RenderWorker(QThread):
 
     result_ready = Signal(str, str, name="result_ready")
     progress = Signal(int, name="progress")
+    error = Signal(str, name="error")
+    # Tagged signals let replaceable pages discard queued results from older requests.
+    # Preserve the original signals for the Widgets frontend.
+    result_tagged = Signal(int, str, str)
+    progress_tagged = Signal(int, int)
+    error_tagged = Signal(int, str)
+    finished_tagged = Signal(int)
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
@@ -223,7 +233,7 @@ class RenderWorker(QThread):
         crash_log.record("render.destroy.end")
 
     @time_function("render")
-    def render(self, items: List[Tuple[doorstop.Item, int]], root: Path, partial: bool) -> None:
+    def render(self, items: List[Tuple[doorstop.Item, int]], root: Path, partial: bool) -> int:
         """Render HTML from doorstop items.
 
         Args:
@@ -235,6 +245,7 @@ class RenderWorker(QThread):
             self.root = root
             self.partial = partial
             self.change += 1
+            request = self.change
             self.restart = True
             self.condition.wakeOne()
 
@@ -242,6 +253,7 @@ class RenderWorker(QThread):
 
         if not self.isRunning():
             self.start(QThread.Priority.NormalPriority)
+        return request
 
     def _on_progress(self, p: int) -> None:
         crash_log.record("render.progress.emit.begin", percentage=p)
@@ -252,7 +264,7 @@ class RenderWorker(QThread):
 
     def run(self) -> None:
         crash_log.record("render.worker.start")
-        item_renderer = ItemRenderer(self._on_progress)
+        item_renderer = ItemRenderer(self._on_progress, self.error.emit)
         last_change = 0
         while True:
             with QMutexLocker(self.mutex) as qm:
@@ -268,9 +280,21 @@ class RenderWorker(QThread):
                 partial = self.partial
                 root = Path(self.root)
 
+            def report_progress(p: int) -> None:
+                self._on_progress(p)
+                self.progress_tagged.emit(last_change, p)
+
+            def report_error(detail: str) -> None:
+                self.error.emit(detail)
+                self.error_tagged.emit(last_change, detail)
+
+            item_renderer.progress_cb = report_progress
+            item_renderer.error_cb = report_error
             for uid, content in item_renderer.process(root=str(root), partial=partial, items=items):
                 crash_log.record("render.result_ready.emit.begin", uid=uid)
                 try:
                     self.result_ready.emit(uid, content)
+                    self.result_tagged.emit(last_change, uid, content)
                 finally:
                     crash_log.record("render.result_ready.emit.end", uid=uid)
+            self.finished_tagged.emit(last_change)

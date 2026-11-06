@@ -75,10 +75,11 @@ jobs:
           smoke_dir=$(mktemp -d)
           uv venv --python "$(python -c 'import sys; print(sys.executable)')" "$smoke_dir/venv"
           uv pip install --python "$smoke_dir/venv" 'setuptools>=80,<81'
-          uv pip install --python "$smoke_dir/venv" --no-deps "$wheel"
+          uv pip install --python "$smoke_dir/venv" "$wheel"
           (
             cd "$smoke_dir"
             uv run --python "$smoke_dir/venv" python -c 'import doorstop_edit; assert "site-packages" in doorstop_edit.__file__; assert doorstop_edit.__version__ != "(local)"'
+            uv run --python "$smoke_dir/venv" python "$GITHUB_WORKSPACE/doorstop_edit/test/test_qml_package_smoke.py"
           )
 
       - name: Code check
@@ -86,6 +87,12 @@ jobs:
 
       - name: Requirements traceability check
         run: uv run --no-sync python tools/check_requirements.py
+
+      - name: Migration traceability graph
+        run: |
+          graph="$RUNNER_TEMP/migration-traceability.json"
+          uv run --no-sync python tools/traceability.py --output "$graph"
+          uv run --no-sync python tools/traceability.py --validate "$graph"
 
       - name: Run tests (Ubuntu)
         if: ${{ matrix.os == 'Ubuntu' }}
