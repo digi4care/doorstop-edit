@@ -501,7 +501,7 @@ def test_remove_backend_error_reports_uncertain_state(tmp_path: Path, qtbot: QtB
     assert app.doorstop_data.find_document("REQ-A") is not None
 
 
-def test_validation_service_retains_temp_while_process_runs(tmp_path: Path) -> None:
+def test_validation_service_retains_temp_while_process_runs(qtbot: QtBot, tmp_path: Path) -> None:
     from doorstop_edit.validation_service import ValidationService
 
     service = ValidationService()
@@ -512,6 +512,9 @@ def test_validation_service_retains_temp_while_process_runs(tmp_path: Path) -> N
     assert result_dir.exists()
     service.shutdown()
     assert run.cleanup_event.wait(5)
+    # cleanup_event is set on the worker before its result signal is delivered.
+    # Keep the QObject on its owning thread until that queued callback is handled.
+    qtbot.waitUntil(lambda: service._active is None, timeout=5000)
     assert result_dir.exists(), "shutdown did not process a completed helper result"
 
 
