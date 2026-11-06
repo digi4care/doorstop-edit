@@ -33,12 +33,16 @@ def update_splash_msg(ss: QSplashScreen, text: str) -> None:
     ss.showMessage(text, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, Qt.GlobalColor.white)
 
 
-def setup(app: QApplication, argv: List[str]) -> Optional[DoorstopEdit]:
+def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--verbose", action="store_true", help="turn on verbose logging")
-    parser.add_argument("--version", action="store_true", help="turn on verbose logging")
+    parser.add_argument("--version", action="store_true", help="show version information")
     parser.add_argument("directory", default="", nargs="?", help="Doorstop root directory")
-    args = parser.parse_args(argv[1:])
+    return parser
+
+
+def setup(app: QApplication, argv: List[str]) -> Optional[DoorstopEdit]:
+    args = create_parser().parse_args(argv[1:])
 
     if args.version:
         print(create_version_summary())

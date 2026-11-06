@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator, Optional
 from unittest import mock
 
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 
@@ -15,11 +16,14 @@ from doorstop_edit.main import setup as main_setup
 @contextmanager
 def setup_ctx(*args: Any, **kwds: Any) -> Iterator[Optional[DoorstopEdit]]:
     app = main_setup(*args, **kwds)
-    yield app
-    if app is not None:
-        # Needs to called to cleanup threads etc. Work-around since QApplication wont process quit
-        # calls if not QApplication.exec() is called (which we dont wanna call in tests).
-        app.quit()
+    try:
+        yield app
+    finally:
+        if app is not None:
+            # The test does not enter QApplication.exec(), so flush deferred page deletion explicitly.
+            app.quit()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            QApplication.processEvents()
 
 
 def test_start_no_exceptions(qtbot: QtBot, qapp: QApplication) -> None:

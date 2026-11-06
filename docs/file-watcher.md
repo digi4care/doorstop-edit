@@ -17,13 +17,15 @@ transient delete/move sequences at the application boundary are not verified her
 
 ## Event delivery
 
-The watcher coalesces events within a 100 ms quiet period. It delivers each distinct content-change
-filename (`True`); if the batch contains any structural event, it delivers one structural refresh
-(`False`, empty filename), which takes precedence over content-only reloads in that batch. This avoids
-using a potentially stale basename for a mixed batch. The watcher skips roots that are already missing
-when watches are scheduled and tolerates a root disappearing during scheduling. It does not itself
-guarantee that a deleted root is rediscovered or that a failed application rebuild is retried. Stopping
-cancels pending delivery; `start()` creates a fresh Watchdog observer after a stop, so restart is safe.
+The watcher coalesces events within a 100 ms quiet period and delivers one callback per batch:
+`(modified_only, paths, generation)`. `paths` contains the distinct absolute paths seen in the batch.
+If any event is structural, `modified_only` is false and the application performs one structural
+refresh; otherwise all changed item paths are reloaded together. A monotonically increasing generation
+lets the application reject callbacks queued for an earlier watch period. The watcher skips roots that
+are already missing when watches are scheduled and tolerates a root disappearing during scheduling. It
+does not itself guarantee that a deleted root is rediscovered or that a failed application rebuild is
+retried. Stopping cancels pending delivery and waits for active callbacks; restarting creates a fresh
+platform-appropriate Watchdog observer and restores the scheduled document roots.
 
 ## Platform observer
 

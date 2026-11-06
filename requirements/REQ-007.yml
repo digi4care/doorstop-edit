@@ -1,0 +1,19 @@
+active: true
+derived: false
+evidence:
+- |
+  ../doorstop_edit/test/test_file_watcher_integration.py#test_external_item_deletion_removes_it_after_rebuild
+header: ''
+level: 7.0
+links: []
+normative: true
+ref: ''
+references:
+- path: docs/file-watcher.md
+  type: file
+reviewed: KxAVQnz3pw87a5iQFNOzAJpY3lsulIC42vFEelbnE78=
+source: |
+  ../docs/file-watcher.md#decision-externally-deleted-items-disappear-from-the-tree
+text: |
+  After a successful rebuild following external item-file deletion, the deleted item must disappear from the item tree.
+verified: true

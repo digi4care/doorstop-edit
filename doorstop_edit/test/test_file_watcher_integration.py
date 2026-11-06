@@ -58,3 +58,18 @@ def test_rebuild_after_project_root_was_removed_does_not_crash(tmp_path: Path) -
     data.rebuild()
 
     assert data.get_documents() == {}
+
+
+def test_watcher_ignores_paths_outside_project_root(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    generate_tree(root, 1, 2)
+    data = DoorstopData(None, root)
+    data.rebuild()
+    generation = data.file_watcher.generation
+    revision = data.content_revision
+
+    data._process_filewatch_callback(True, (str((tmp_path / "outside.yml").resolve()),), generation)
+
+    assert data.content_revision == revision
+    data.stop()

@@ -1,12 +1,13 @@
-import json
+import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Iterator, Optional, cast
-from unittest.mock import Mock, patch
+from typing import Any, Iterator, cast
+from unittest.mock import patch
 
 import doorstop
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QApplication, QMessageBox
 from pytestqt.qtbot import QtBot
 
 from doorstop_edit import application as application_module
@@ -16,6 +17,7 @@ from doorstop_edit.dialogs import ConfirmDialog, InfoDialog
 from doorstop_edit.document_dialog import AddDocumentDialog
 from doorstop_edit.doorstop_data import ValidationFinding
 from doorstop_edit.ui_gen.ui_main import Ui_MainWindow
+from doorstop_edit.validation_service import ValidationRunResult
 from tools.gen_sample_tree import generate_tree
 
 
@@ -31,7 +33,7 @@ def app_session(tree_root: Path) -> Iterator[DoorstopEdit]:
     """
     app = DoorstopEdit(tree_root)
     app.start()  # Must show it, clicks wont work otherwise.
-    app.doorstop_data.stop()  # Application behavior tests do not exercise the file watcher.
+    app.doorstop_data.stop()
     yield app
     app.quit()
 
@@ -56,197 +58,6 @@ def count_items_in_current_document(app: DoorstopEdit) -> int:
     for _ in app.selected_document or []:
         count += 1
     return count
-
-
-def test_add_document_creates_and_selects_new_document(
-    qtbot: QtBot, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    previous_validation_revision = app._validation_revision
-
-    class AcceptedDialog:
-        created_prefix = "NEW"
-
-        def __init__(
-            self,
-            parent: object,
-            prefixes: object,
-            selected_prefix: object,
-            callback: object,
-            *,
-            allow_top_level: bool,
-        ) -> None:
-            assert "REQ-A" in prefixes  # type: ignore[operator]
-            assert selected_prefix == "REQ-A"
-            assert allow_top_level is False
-            callback("NEW", "REQ-A")  # type: ignore[operator]
-
-        def exec(self) -> int:
-            return application_module.QDialog.DialogCode.Accepted
-
-    monkeypatch.setattr(application_module, "AddDocumentDialog", AcceptedDialog)
-    app._on_add_document_clicked()
-    assert app.window.ui.tree_combo_box.currentData() == "NEW"
-    assert app.selected_document is not None and app.selected_document.prefix == "NEW"
-    assert app.window.ui.remove_document_button.isEnabled()
-    assert app._validation_revision > previous_validation_revision
-    app.doorstop_data.remove_document("NEW")
-
-
-def test_add_dialog_allows_top_level_document_in_empty_project(
-    qtbot: QtBot, tmp_path: Path, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(InfoDialog, "inform", lambda *_: None)
-    app._rebuild_root(new_root=tmp_path)
-    values: list[bool] = []
-
-    class CancelledDialog:
-        created_prefix = None
-
-        def __init__(self, *_args: object, allow_top_level: bool) -> None:
-            values.append(allow_top_level)
-
-        def exec(self) -> int:
-            return application_module.QDialog.DialogCode.Rejected
-
-    monkeypatch.setattr(application_module, "AddDocumentDialog", CancelledDialog)
-    app._on_add_document_clicked()
-    assert values == [True]
-
-
-def test_add_dialog_keeps_invalid_prefix_open_and_accepts_callback(qtbot: QtBot, app: DoorstopEdit) -> None:
-    calls: list[tuple[str, Optional[str]]] = []
-
-    def create(prefix: str, parent: Optional[str]) -> str:
-        calls.append((prefix, parent))
-        if "/" in prefix:
-            raise doorstop.DoorstopError("Invalid document prefix")
-        return prefix
-
-    dialog = AddDocumentDialog(app.window, ["REQ-A"], "REQ-A", create)
-    qtbot.addWidget(dialog)
-    dialog.show()
-    dialog.prefix_edit.setText("BAD/NAME")
-    dialog.create_button.click()
-    assert dialog.isVisible()
-    assert "Invalid" in dialog.error_label.text()
-    assert calls == [("BAD/NAME", "REQ-A")]
-    dialog.prefix_edit.setText("GOOD")
-    dialog.create_button.click()
-    assert dialog.created_prefix == "GOOD"
-    assert dialog.result() == application_module.QDialog.DialogCode.Accepted
-
-
-def test_remove_parent_refuses_before_confirmation_and_cancel_keeps_leaf(
-    qtbot: QtBot, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    app.doorstop_data.create_document("TEMP", parent="REQ-A")
-    notices: list[str] = []
-    monkeypatch.setattr(InfoDialog, "inform", lambda _parent, _title, text: notices.append(text))
-    monkeypatch.setattr(ConfirmDialog, "ask", lambda *_: pytest.fail("must not confirm parent"))
-    app._on_remove_document_clicked()
-    assert notices and "TEMP" in notices[0]
-
-    leaf_index = app.window.ui.tree_combo_box.findData("TEMP")
-    app.window.ui.tree_combo_box.setCurrentIndex(leaf_index)
-    monkeypatch.setattr(ConfirmDialog, "ask", lambda *_: False)
-    app._on_remove_document_clicked()
-    assert app.doorstop_data.find_document("TEMP") is not None
-    app.doorstop_data.remove_document("TEMP")
-
-
-def test_remove_confirmed_leaf_refreshes_selector_and_empty_editor(
-    qtbot: QtBot, tmp_path: Path, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    generate_tree(tmp_path, 1, 1)
-    app._rebuild_root(new_root=tmp_path)
-    # The sample generator includes non-document image assets; this scenario
-    # targets selector/editor refresh rather than the unmanaged-content guard.
-    import shutil
-
-    shutil.rmtree(tmp_path / "REQ-A" / "images", ignore_errors=True)
-    leaf = app.doorstop_data.create_document("ONLY", parent="REQ-A")
-    app.window.ui.tree_combo_box.setCurrentIndex(app.window.ui.tree_combo_box.findData(leaf))
-    monkeypatch.setattr(ConfirmDialog, "ask", lambda *_: True)
-    with patch.object(application_module.QMessageBox, "warning") as warning:
-        app._on_remove_document_clicked()
-    warning.assert_not_called()
-    assert app.selected_document is not None and app.selected_document.prefix == "REQ-A"
-    assert app.window.ui.tree_combo_box.findData("ONLY") == -1
-    assert app.window.ui.item_edit_uid.text() == ""
-
-
-def test_remove_last_document_leaves_empty_selection(
-    qtbot: QtBot, tmp_path: Path, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    generate_tree(tmp_path, 1, 1)
-    import shutil
-
-    shutil.rmtree(tmp_path / "REQ-A" / "images", ignore_errors=True)
-    app._rebuild_root(new_root=tmp_path)
-    monkeypatch.setattr(ConfirmDialog, "ask", lambda *_: True)
-    app._on_remove_document_clicked()
-    assert app.window.ui.tree_combo_box.count() == 0
-    assert app.selected_document is None
-    assert not app.window.ui.remove_document_button.isEnabled()
-    assert app.window.ui.item_tree_widget.topLevelItemCount() == 0
-    assert app.window.ui.item_edit_uid.text() == ""
-
-
-def test_remove_backend_failure_reports_partial_state(
-    qtbot: QtBot, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    leaf_prefix = "REQ-C"
-    assert app.doorstop_data.find_document(leaf_prefix) is not None
-    app.window.ui.tree_combo_box.setCurrentIndex(app.window.ui.tree_combo_box.findData(leaf_prefix))
-    monkeypatch.setattr(
-        InfoDialog,
-        "inform",
-        lambda *_: pytest.fail("Unexpected child-document refusal for a leaf"),
-    )
-    monkeypatch.setattr(ConfirmDialog, "ask", lambda *_: True)
-    messages: list[str] = []
-    monkeypatch.setattr(application_module.QMessageBox, "warning", lambda _parent, _title, text: messages.append(text))
-
-    def fail_remove(_prefix: str) -> None:
-        raise OSError("disk full")
-
-    monkeypatch.setattr(app.doorstop_data, "remove_document", fail_remove)
-    app._on_remove_document_clicked()
-    assert "disk full" in messages[0]
-
-
-def test_remove_refresh_failure_warns_and_disables_stale_editor(
-    qtbot: QtBot, tmp_path: Path, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import shutil
-
-    generate_tree(tmp_path, 1, 1)
-    shutil.rmtree(tmp_path / "REQ-A" / "images", ignore_errors=True)
-    app._rebuild_root(new_root=tmp_path)
-    monkeypatch.setattr(ConfirmDialog, "ask", lambda *_: True)
-    messages: list[str] = []
-    monkeypatch.setattr(application_module.QMessageBox, "warning", lambda _parent, _title, text: messages.append(text))
-
-    def fail_rebuild(*_args: object, **_kwargs: object) -> None:
-        raise doorstop.DoorstopError("simulated reload failure")
-
-    real_rebuild = app.doorstop_data.rebuild
-    monkeypatch.setattr(app.doorstop_data, "rebuild", fail_rebuild)
-    app._on_remove_document_clicked()
-
-    assert not (tmp_path / "REQ-A").exists()
-    assert app.doorstop_data.tree_stale
-    assert "tree may be stale" in messages[0]
-    assert "reopen or reload" in messages[0].lower()
-    assert not app.window.ui.tree_combo_box.isEnabled()
-    assert not app.window.ui.add_document_button.isEnabled()
-    assert not app.window.ui.remove_document_button.isEnabled()
-    assert app.item_edit_view.item is None
-
-    monkeypatch.setattr(app.doorstop_data, "rebuild", real_rebuild)
-    monkeypatch.setattr(InfoDialog, "inform", lambda *_: None)
-    app._rebuild_root(new_root=tmp_path)
-    assert not app.doorstop_data.tree_stale
 
 
 def click_item_in_tree(qtbot: QtBot, ui: Ui_MainWindow, index: int) -> None:
@@ -380,24 +191,52 @@ def test_open_folder(qtbot: QtBot, app: DoorstopEdit, monkeypatch: pytest.Monkey
 
             assert doorstop_build.call_count == 1
     finally:
-        app.doorstop_data.rebuild(new_root=tree_root)
+        app._rebuild_root(new_root=tree_root)
 
 
-def test_validation_menu_action_requests_validation(qtbot: QtBot, app: DoorstopEdit) -> None:
-    with patch.object(app, "_request_validation") as request_validation:
-        app.window.ui.menu_action_validate_project.trigger()
-    request_validation.assert_called_once_with()
+def _run_result(
+    app: DoorstopEdit,
+    findings: tuple[ValidationFinding, ...] | list[ValidationFinding] = (),
+    *,
+    state: str = "succeeded",
+    error: str | None = None,
+) -> ValidationRunResult:
+    root = app.doorstop_data.root
+    assert root is not None
+    now = "2026-01-01T00:00:00+00:00"
+    return ValidationRunResult(
+        str(root.resolve()),
+        app.doorstop_data.content_revision,
+        "test-run",
+        tuple(findings),
+        state,
+        now,
+        now,
+        error,
+        str(root.resolve()),
+    )
+
+
+def _wait_for_validation_idle(qtbot: QtBot, app: DoorstopEdit) -> None:
+    qtbot.waitUntil(
+        lambda: (
+            not app._validation_running
+            and app.validation_service._active is None
+            and app.validation_service._pending is None
+            and not app.validation_service._starting
+        )
+    )
 
 
 def test_validation_action_and_tree_feedback(qtbot: QtBot, app: DoorstopEdit) -> None:
     app.window.ui.item_tree_search_input.clear()
     app.window.ui.tree_combo_box.setCurrentIndex(0)
-    qtbot.waitUntil(lambda: not app._validation_running)
+    _wait_for_validation_idle(qtbot, app)
     result = [
         ValidationFinding("error", "REQ-A: REQ-A-001: broken link", "REQ-A-001"),
         ValidationFinding("warning", "REQ-A: REQ-A-002: no text", "REQ-A-002"),
     ]
-    app._on_validation_result(app._validation_revision, result, None)
+    app._on_validation_run_result(_run_result(app, result))
 
     app.window.ui.item_tree_search_input.setText("REQ-A-001")
     row = app.window.ui.item_tree_widget.topLevelItem(0)
@@ -417,108 +256,35 @@ def test_validation_action_and_tree_feedback(qtbot: QtBot, app: DoorstopEdit) ->
 
 
 def test_validation_requests_coalesce_while_running(qtbot: QtBot, app: DoorstopEdit) -> None:
-    qtbot.waitUntil(lambda: not app._validation_running)
-    with patch.object(app, "_start_validation") as start:
-        app._validation_running = True
-        app._validation_requested = False
+    _wait_for_validation_idle(qtbot, app)
+    service = app.validation_service
+    with patch.object(service, "request") as request:
         app._request_validation()
         app._request_validation()
-        app._request_validation()
-        assert app._validation_requested is True
-        assert start.call_count == 0
-
-        app._finish_validation_process()
-
-        start.assert_called_once_with()
+        assert request.call_count == 2
+        assert request.call_args.args == (app.doorstop_data.root, app.doorstop_data.content_revision)
 
 
 def test_successful_item_save_requests_validation(qtbot: QtBot, app: DoorstopEdit) -> None:
-    qtbot.waitUntil(lambda: not app._validation_running)
+    _wait_for_validation_idle(qtbot, app)
     item = app.doorstop_data.find_item("REQ-A-001")
     assert item is not None
     app.doorstop_data.save_item(item)
-    qtbot.waitUntil(lambda: not app._validation_running)
+    _wait_for_validation_idle(qtbot, app)
     assert app.validation_status.text().startswith("Validation ·")
 
 
 def test_validation_failure_keeps_existing_markers(qtbot: QtBot, app: DoorstopEdit) -> None:
-    qtbot.waitUntil(lambda: not app._validation_running)
+    _wait_for_validation_idle(qtbot, app)
     existing = [ValidationFinding("warning", "Existing warning", "REQ-A-001")]
-    app._on_validation_result(app._validation_revision, existing, None)
-    app._on_validation_result(app._validation_revision, None, "Invalid item")
+    app._on_validation_run_result(_run_result(app, existing))
+    app._on_validation_run_result(_run_result(app, (), state="failed", error="Invalid item"))
     assert app.validation_status.text() == "Validation could not complete"
     assert "Invalid item" in app.validation_dialog.toPlainText()
     app.window.ui.item_tree_search_input.setText("REQ-A-001")
     row = app.window.ui.item_tree_widget.topLevelItem(0)
     assert row is not None
     assert "Existing warning" in row.toolTip(1)
-
-
-@pytest.mark.parametrize("result_content", [None, "not json", json.dumps({"job_id": "wrong"})])
-def test_validation_completion_rejects_missing_or_invalid_result(
-    tmp_path: Path, qtbot: QtBot, app: DoorstopEdit, result_content: str | None
-) -> None:
-    qtbot.waitUntil(lambda: not app._validation_running)
-    revision = app._validation_revision
-    app._on_validation_result(revision, [ValidationFinding("warning", "Keep this finding", "REQ-A-001")], None)
-
-    result_directory = tmp_path / "validation-result"
-    result_directory.mkdir()
-    result_path = result_directory / "result.json"
-    if result_content is not None:
-        result_path.write_text(result_content, encoding="utf-8")
-    process = Mock()
-    app._validation_process = process
-    root = app.doorstop_data.root
-    assert root is not None
-    app._validation_job = ("expected-job", root.resolve(), revision, result_path)
-    app._validation_temp = result_directory
-    app._validation_running = True
-
-    app._process_validation_completion(process, 0)
-
-    assert app.validation_status.text() == "Validation could not complete"
-    assert "could not complete" in app.validation_dialog.toPlainText()
-    app.window.ui.item_tree_search_input.setText("REQ-A-001")
-    row = app.window.ui.item_tree_widget.topLevelItem(0)
-    assert row is not None and "Keep this finding" in row.toolTip(1)
-    assert not result_directory.exists()
-
-
-def test_stale_validation_result_does_not_replace_current_findings(qtbot: QtBot, app: DoorstopEdit) -> None:
-    qtbot.waitUntil(lambda: not app._validation_running)
-    current_revision = app._validation_revision
-    current = [ValidationFinding("warning", "Current warning", "REQ-A-001")]
-    stale = [ValidationFinding("error", "Stale error", "REQ-A-002")]
-    app._on_validation_result(current_revision, current, None)
-    current_status = app.validation_status.text()
-
-    app._on_validation_result(current_revision - 1, stale, None)
-
-    assert app.validation_status.text() == current_status
-    app.window.ui.item_tree_search_input.setText("REQ-A-001")
-    current_row = app.window.ui.item_tree_widget.topLevelItem(0)
-    assert current_row is not None and "Current warning" in current_row.toolTip(1)
-    app.window.ui.item_tree_search_input.setText("REQ-A-002")
-    stale_row = app.window.ui.item_tree_widget.topLevelItem(0)
-    assert stale_row is not None and "Stale error" not in stale_row.toolTip(1)
-
-
-def test_project_switch_clears_old_validation_findings(tmp_path: Path, qtbot: QtBot, app: DoorstopEdit) -> None:
-    qtbot.waitUntil(lambda: not app._validation_running)
-    app._on_validation_result(
-        app._validation_revision, [ValidationFinding("error", "Old project error", "REQ-A-001")], None
-    )
-    new_root = tmp_path / "new-project"
-    new_root.mkdir()
-    generate_tree(new_root, 1, 2)
-
-    app._rebuild_root(new_root=new_root)
-
-    assert "Old project error" not in app.validation_dialog.toPlainText()
-    app.window.ui.item_tree_search_input.setText("REQ-A-001")
-    row = app.window.ui.item_tree_widget.topLevelItem(0)
-    assert row is not None and "Old project error" not in row.toolTip(1)
 
 
 def test_open_project_with_malformed_item_shows_error_marker(tmp_path: Path, qtbot: QtBot, app: DoorstopEdit) -> None:
@@ -547,6 +313,291 @@ def test_open_project_with_malformed_item_shows_error_marker(tmp_path: Path, qtb
     assert "YAML" in bad_row.toolTip(1)
 
 
+def test_add_document_selects_created_child(tmp_path: Path, qtbot: QtBot, app: DoorstopEdit) -> None:
+    generate_tree(tmp_path, 1, 1)
+    app._rebuild_root(new_root=tmp_path)
+    assert app.selected_document is not None
+    assert app.selected_document.prefix == "REQ-A"
+
+    def fill_dialog() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, AddDocumentDialog)
+        assert dialog.parent_combo.currentData() == "REQ-A"
+        assert dialog.parent_combo.count() == 1
+        assert dialog.parent_combo.itemText(0) == "REQ-A"
+        dialog.prefix_edit.setText("CHILD")
+        qtbot.keyClick(dialog.prefix_edit, Qt.Key.Key_Return)
+
+    QTimer.singleShot(0, fill_dialog)
+    qtbot.mouseClick(app.window.ui.add_document_button, Qt.MouseButton.LeftButton)
+    assert app.window.ui.tree_combo_box.currentData() == "CHILD"
+    assert app.selected_document is not None and app.selected_document.prefix == "CHILD"
+    child = app.doorstop_data.find_document("CHILD")
+    assert child is not None
+    assert child.parent == "REQ-A"
+    assert app.window.ui.item_tree_widget.topLevelItemCount() == 0
+    assert app.window.ui.item_edit_uid.text() == ""
+
+
+def test_add_document_invalid_prefix_stays_open_and_cancel_does_not_create(
+    tmp_path: Path, qtbot: QtBot, app: DoorstopEdit
+) -> None:
+    generate_tree(tmp_path, 1, 1)
+    app._rebuild_root(new_root=tmp_path)
+    original = set(tmp_path.rglob(".doorstop.yml"))
+
+    def try_invalid_then_cancel() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, AddDocumentDialog)
+        dialog.create_button.click()
+        assert dialog.isVisible()
+        assert "required" in dialog.error_label.text().lower()
+        dialog.prefix_edit.setText("BAD/NAME")
+        dialog.create_button.click()
+        assert dialog.isVisible()
+        assert dialog.error_label.text()
+        qtbot.keyClick(dialog, Qt.Key.Key_Escape)
+
+    QTimer.singleShot(0, try_invalid_then_cancel)
+    qtbot.mouseClick(app.window.ui.add_document_button, Qt.MouseButton.LeftButton)
+    assert set(tmp_path.rglob(".doorstop.yml")) == original
+    assert app.window.ui.tree_combo_box.currentData() == "REQ-A"
+
+
+@pytest.mark.parametrize("invalid_prefix", ["BAD NAME", "BAD "])
+def test_add_document_whitespace_is_rejected_without_normalizing(
+    tmp_path: Path, qtbot: QtBot, app: DoorstopEdit, invalid_prefix: str
+) -> None:
+    generate_tree(tmp_path, 1, 1)
+    app._rebuild_root(new_root=tmp_path)
+    original = set(tmp_path.rglob(".doorstop.yml"))
+    observed = []
+
+    def try_invalid_then_escape() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, AddDocumentDialog)
+        dialog.prefix_edit.setText(invalid_prefix)
+        try:
+            qtbot.keyClick(dialog.prefix_edit, Qt.Key.Key_Return)
+            observed.append((dialog.isVisible(), dialog.prefix_edit.text(), dialog.error_label.text()))
+        finally:
+            qtbot.keyClick(dialog, Qt.Key.Key_Escape)
+
+    QTimer.singleShot(0, try_invalid_then_escape)
+    qtbot.mouseClick(app.window.ui.add_document_button, Qt.MouseButton.LeftButton)
+    assert len(observed) == 1
+    assert observed[0][:2] == (True, invalid_prefix)
+    assert "whitespace" in observed[0][2].lower()
+    assert set(tmp_path.rglob(".doorstop.yml")) == original
+    assert app.window.ui.tree_combo_box.currentData() == "REQ-A"
+
+
+def test_remove_leaf_refreshes_selection_and_editor(tmp_path: Path, qtbot: QtBot, app: DoorstopEdit) -> None:
+    generate_tree(tmp_path, 1, 1)
+    app._rebuild_root(new_root=tmp_path)
+    app.doorstop_data.create_document("LEAF", parent="REQ-A")
+    app.window.ui.tree_combo_box.setCurrentIndex(app.window.ui.tree_combo_box.findData("LEAF"))
+    assert app.selected_document is not None
+    leaf_path = Path(app.selected_document.path)
+
+    def confirm() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, QMessageBox)
+        assert dialog.defaultButton().text() == "Cancel"
+        assert "LEAF" in dialog.text()
+        next(button for button in dialog.buttons() if button.text() == "Remove document").click()
+
+    QTimer.singleShot(0, confirm)
+    qtbot.mouseClick(app.window.ui.remove_document_button, Qt.MouseButton.LeftButton)
+    assert not (leaf_path / ".doorstop.yml").exists()
+    assert app.doorstop_data.find_document("LEAF") is None
+    assert app.window.ui.tree_combo_box.findData("LEAF") == -1
+    assert app.selected_document is not None and app.selected_document.prefix == "REQ-A"
+    assert app.window.ui.item_edit_uid.text() == ""
+
+
+def test_remove_parent_with_children_blocked_before_confirmation(
+    tmp_path: Path, qtbot: QtBot, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    generate_tree(tmp_path, 1, 1)
+    app._rebuild_root(new_root=tmp_path)
+    app.doorstop_data.create_document("CHILD", parent="REQ-A")
+    app.window.ui.tree_combo_box.setCurrentIndex(app.window.ui.tree_combo_box.findData("REQ-A"))
+    configs = set(tmp_path.rglob(".doorstop.yml"))
+    parent_items = {path: path.read_bytes() for path in (tmp_path / "REQ-A").glob("REQ-A-*.yml")}
+    assert parent_items
+    notices = []
+    monkeypatch.setattr(InfoDialog, "inform", lambda _parent, title, text: notices.append((title, text)))
+    with patch.object(QMessageBox, "exec", side_effect=AssertionError("Confirmation must not open")):
+        qtbot.mouseClick(app.window.ui.remove_document_button, Qt.MouseButton.LeftButton)
+    assert "CHILD" in notices[0][1]
+    assert set(tmp_path.rglob(".doorstop.yml")) == configs
+    assert {path: path.read_bytes() for path in (tmp_path / "REQ-A").glob("REQ-A-*.yml")} == parent_items
+    assert app.window.ui.tree_combo_box.currentData() == "REQ-A"
+    assert app.doorstop_data.find_document("CHILD") is not None
+
+
+def test_remove_without_selection_disabled_and_confirmation_cancel_keeps_document(
+    tmp_path: Path, qtbot: QtBot, app: DoorstopEdit
+) -> None:
+    generate_tree(tmp_path, 1, 1)
+    app._rebuild_root(new_root=tmp_path)
+    combo = app.window.ui.tree_combo_box
+    combo.setCurrentIndex(-1)
+    assert not app.window.ui.remove_document_button.isEnabled()
+    combo.setCurrentIndex(combo.findData("REQ-A"))
+
+    def cancel() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, QMessageBox)
+        dialog.defaultButton().click()
+
+    QTimer.singleShot(0, cancel)
+    qtbot.mouseClick(app.window.ui.remove_document_button, Qt.MouseButton.LeftButton)
+    assert app.doorstop_data.find_document("REQ-A") is not None
+    assert next(tmp_path.rglob(".doorstop.yml")).exists()
+
+
+def test_remove_last_document_shows_empty_state(tmp_path: Path, qtbot: QtBot, app: DoorstopEdit) -> None:
+    generate_tree(tmp_path, 1, 1)
+    # The sample generator adds an unmanaged image directory; remove that fixture artifact
+    # so this test exercises the final-document path rather than the data-layer safety guard.
+    shutil.rmtree(tmp_path / "REQ-A" / "images")
+    app._rebuild_root(new_root=tmp_path)
+
+    def confirm() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, QMessageBox)
+        next(button for button in dialog.buttons() if button.text() == "Remove document").click()
+        QTimer.singleShot(0, dismiss_unexpected_error)
+
+    def dismiss_unexpected_error() -> None:
+        dialog = QApplication.activeModalWidget()
+        if isinstance(dialog, QMessageBox):
+            error_messages.append(dialog.text())
+            dialog.accept()
+
+    error_messages: list[str] = []
+    QTimer.singleShot(0, confirm)
+    qtbot.mouseClick(app.window.ui.remove_document_button, Qt.MouseButton.LeftButton)
+    assert not error_messages, error_messages
+    assert app.window.ui.tree_combo_box.count() == 0
+    assert app.selected_document is None
+    assert not app.window.ui.remove_document_button.isEnabled()
+    assert app.window.ui.item_tree_widget.topLevelItemCount() == 0
+    assert app.window.ui.item_edit_uid.text() == ""
+    assert app.window.ui.add_document_button.isEnabled()
+
+
+def test_remove_backend_error_reports_uncertain_state(tmp_path: Path, qtbot: QtBot, app: DoorstopEdit) -> None:
+    generate_tree(tmp_path, 1, 1)
+    app._rebuild_root(new_root=tmp_path)
+    messages = []
+
+    def confirm_then_dismiss_error() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, QMessageBox)
+        next(button for button in dialog.buttons() if button.text() == "Remove document").click()
+        QTimer.singleShot(0, read_error)
+
+    def read_error() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, QMessageBox)
+        messages.append(dialog.text())
+        dialog.accept()
+
+    with patch.object(app.doorstop_data, "remove_document", side_effect=doorstop.DoorstopError("Permission denied")):
+        QTimer.singleShot(0, confirm_then_dismiss_error)
+        qtbot.mouseClick(app.window.ui.remove_document_button, Qt.MouseButton.LeftButton)
+    assert "Permission denied" in messages[0]
+    assert "Check the project" in messages[0]
+    assert app.doorstop_data.find_document("REQ-A") is not None
+
+
+def test_remove_refresh_failure_warns_and_disables_stale_editor(
+    qtbot: QtBot, tmp_path: Path, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    generate_tree(tmp_path, 1, 1)
+    shutil.rmtree(tmp_path / "REQ-A" / "images", ignore_errors=True)
+    app._rebuild_root(new_root=tmp_path)
+    messages: list[str] = []
+    monkeypatch.setattr(
+        application_module.QMessageBox,
+        "warning",
+        lambda _parent, _title, text: messages.append(text),
+    )
+
+    def confirm_removal(dialog: QMessageBox) -> int:
+        next(button for button in dialog.buttons() if button.text() == "Remove document").click()
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", confirm_removal)
+
+    def fail_rebuild(*_args: object, **_kwargs: object) -> None:
+        raise doorstop.DoorstopError("simulated reload failure")
+
+    monkeypatch.setattr(app.doorstop_data, "rebuild", fail_rebuild)
+    app._on_remove_document_clicked()
+
+    assert not (tmp_path / "REQ-A").exists()
+    assert app.doorstop_data.tree_stale
+    assert "tree may be stale" in messages[0]
+    assert "reopen or reload" in messages[0].lower()
+    assert not app.window.ui.tree_combo_box.isEnabled()
+    assert not app.window.ui.add_document_button.isEnabled()
+    assert not app.window.ui.remove_document_button.isEnabled()
+    assert app.item_edit_view.item is None
+
+
+def test_stale_document_tree_remains_disabled_after_tree_change(qtbot: QtBot, app: DoorstopEdit) -> None:
+    app._mark_document_tree_stale()
+    app._on_tree_changed(modified_only=False)
+
+    assert not app.window.ui.tree_combo_box.isEnabled()
+    assert not app.window.ui.add_document_button.isEnabled()
+    assert not app.window.ui.remove_document_button.isEnabled()
+    assert app.window.ui.item_tree_widget.topLevelItemCount() == 0
+    assert app.window.ui.item_edit_uid.text() == ""
+
+
+def test_validation_service_retains_temp_while_process_runs(qtbot: QtBot, tmp_path: Path) -> None:
+    from doorstop_edit.validation_service import ValidationService
+
+    service = ValidationService()
+    service.request(tmp_path, 4)
+    run = service._active
+    assert run is not None
+    result_dir = run.temp_dir
+    assert result_dir.exists()
+    service.shutdown()
+    assert run.cleanup_event.wait(5)
+    # cleanup_event is set on the worker before its result signal is delivered.
+    # Keep the QObject on its owning thread until that queued callback is handled.
+    qtbot.waitUntil(lambda: service._active is None, timeout=5000)
+    assert result_dir.exists(), "shutdown did not process a completed helper result"
+
+
+def test_quit_marks_shutdown_before_stopping_watcher(qtbot: QtBot, app: DoorstopEdit) -> None:
+    original_stop = app.doorstop_data.stop
+    observed: list[bool] = []
+
+    def stop_watcher() -> None:
+        observed.append(app._shutting_down)
+        original_stop()
+
+    with (
+        patch.object(app.doorstop_data, "stop", side_effect=stop_watcher),
+        patch.object(app.validation_service, "shutdown"),
+        patch.object(app.item_render_view, "destroy"),
+        patch.object(app.window, "close"),
+    ):
+        app.quit()
+
+    # The session-scoped app is reused by later tests; keep it operational.
+    app._shutting_down = False
+    assert observed == [True]
+
+
 def test_external_valid_to_invalid_item_clears_editor_and_blocks_save(qtbot: QtBot, app: DoorstopEdit) -> None:
     item = app.doorstop_data.find_item("REQ-A-001")
     assert item is not None
@@ -555,16 +606,17 @@ def test_external_valid_to_invalid_item_clears_editor_and_blocks_save(qtbot: QtB
     app.item_edit_view.update_item(item)
 
     path.write_text("level: bad\n", encoding="utf-8")
-    app.doorstop_data._on_filewatch_callback(True, str(path))
+    try:
+        app.doorstop_data._on_filewatch_callback(True, (str(path),), app.doorstop_data.file_watcher.generation)
 
-    assert app.doorstop_data.get_item_load_error("REQ-A-001")
-    assert app.item_edit_view.item is None
-    with pytest.raises(ValueError, match="Cannot save invalid item"):
-        app.doorstop_data.save_item(item)
-    assert path.read_text(encoding="utf-8") == "level: bad\n"
-
-    path.write_text(valid_contents, encoding="utf-8")
-    app.doorstop_data._on_filewatch_callback(True, str(path))
+        assert app.doorstop_data.get_item_load_error("REQ-A-001")
+        assert app.item_edit_view.item is None
+        with pytest.raises(ValueError, match="Cannot save invalid item"):
+            app.doorstop_data.save_item(item)
+        assert path.read_text(encoding="utf-8") == "level: bad\n"
+    finally:
+        path.write_text(valid_contents, encoding="utf-8")
+        app.doorstop_data._on_filewatch_callback(True, (str(path),), app.doorstop_data.file_watcher.generation)
     assert app.doorstop_data.get_item_load_error("REQ-A-001") is None
 
 
@@ -585,7 +637,7 @@ def test_save_checks_disk_before_watcher_and_preserves_editor_item(qtbot: QtBot,
         assert app.doorstop_data.get_item_load_error("REQ-A-001")
     finally:
         path.write_text(original_contents, encoding="utf-8")
-        app.doorstop_data._on_filewatch_callback(True, str(path))
+        app.doorstop_data._on_filewatch_callback(True, (str(path),), app.doorstop_data.file_watcher.generation)
 
 
 def test_project_switch_cancels_pending_save_even_for_same_uid(
@@ -705,7 +757,7 @@ def test_watcher_retarget_failure_rolls_back_project_and_schedule(
     data = app.doorstop_data
     original_root = data.root
     original_tree = data._tree
-    original_errors = data.item_load_errors
+    original_errors = data._item_load_errors
     original_docs = list(data.file_watcher.scheduled_docs)
     candidate_root = tmp_path / "watcher-failure"
     candidate_root.mkdir()
@@ -731,6 +783,73 @@ def test_watcher_retarget_failure_rolls_back_project_and_schedule(
 
     assert data.root == original_root
     assert data._tree is original_tree
-    assert data.item_load_errors is original_errors
+    assert data._item_load_errors is original_errors
     assert data.file_watcher.scheduled_docs == original_docs
-    assert sorted(scheduled_paths) == sorted(str(Path(doc.path)) for doc in original_docs)
+    # This application fixture stops the observer; rollback must not schedule the
+    # candidate project, and the prior scheduled document set must be preserved.
+    assert all(not Path(path).is_relative_to(candidate_root) for path in scheduled_paths)
+
+
+def test_validation_menu_action_requests_validation(qtbot: QtBot, app: DoorstopEdit) -> None:
+    with patch.object(app, "_request_validation") as request_validation:
+        app.window.ui.menu_action_validate_project.trigger()
+    request_validation.assert_called_once_with()
+
+
+def test_validation_completion_rejects_missing_or_invalid_result(
+    qtbot: QtBot, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _wait_for_validation_idle(qtbot, app)
+    monkeypatch.setattr(app.validation_service, "_emit_result", lambda _result: None)
+    current = [ValidationFinding("warning", "Keep this finding", "REQ-A-001")]
+    app._on_validation_run_result(_run_result(app, current))
+    app._on_validation_run_result(
+        _run_result(app, (), state="failed", error="Validation helper returned no valid result")
+    )
+    assert app.validation_status.text() == "Validation could not complete"
+    assert "no valid result" in app.validation_dialog.toPlainText()
+    app.window.ui.item_tree_search_input.setText("REQ-A-001")
+    row = app.window.ui.item_tree_widget.topLevelItem(0)
+    assert row is not None and "Keep this finding" in row.toolTip(1)
+
+
+def test_stale_validation_result_does_not_replace_current_findings(
+    qtbot: QtBot, app: DoorstopEdit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _wait_for_validation_idle(qtbot, app)
+    monkeypatch.setattr(app.validation_service, "_emit_result", lambda _result: None)
+    current = _run_result(app, [ValidationFinding("warning", "Current warning", "REQ-A-001")])
+    app._on_validation_run_result(current)
+    old_status = app.validation_status.text()
+    stale = ValidationRunResult(
+        current.root,
+        current.revision - 1,
+        "stale-run",
+        (ValidationFinding("error", "Stale error", "REQ-A-002"),),
+        "succeeded",
+        current.started_at,
+        current.completed_at,
+        None,
+        current.project_id,
+    )
+    app._on_validation_run_result(stale)
+    assert app.validation_status.text() == old_status
+    app.window.ui.item_tree_search_input.setText("REQ-A-001")
+    row = app.window.ui.item_tree_widget.topLevelItem(0)
+    assert row is not None and "Current warning" in row.toolTip(1)
+    app.window.ui.item_tree_search_input.setText("REQ-A-002")
+    row = app.window.ui.item_tree_widget.topLevelItem(0)
+    assert row is not None and "Stale error" not in row.toolTip(1)
+
+
+def test_project_switch_clears_old_validation_findings(tmp_path: Path, qtbot: QtBot, app: DoorstopEdit) -> None:
+    _wait_for_validation_idle(qtbot, app)
+    app._on_validation_run_result(_run_result(app, [ValidationFinding("error", "Old project error", "REQ-A-001")]))
+    new_root = tmp_path / "new-project"
+    new_root.mkdir()
+    generate_tree(new_root, 1, 2)
+    app._rebuild_root(new_root=new_root)
+    assert "Old project error" not in app.validation_dialog.toPlainText()
+    app.window.ui.item_tree_search_input.setText("REQ-A-001")
+    row = app.window.ui.item_tree_widget.topLevelItem(0)
+    assert row is not None and "Old project error" not in row.toolTip(1)

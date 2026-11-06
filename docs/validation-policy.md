@@ -12,10 +12,11 @@ Item edits are automatically saved after 700 ms without further typing. Validati
 save completes, not on every keystroke. The explicit action lets users request a fresh whole-project
 check without making another edit.
 
-The duration of validation on large projects has not been measured. MVP 3 should verify that
-validation does not block editing unacceptably and avoid overlapping/redundant runs if saves arrive
-while a check is in progress. This policy does not define how external file changes affect the
-freshness of displayed results.
+Validation runs in a helper process so it does not block editing; large-project duration has not been
+measured. Requests that arrive while a run is active coalesce into one rerun. Content revisions and
+project roots are checked before results are displayed, so results from an older edit or a previous
+project are ignored. External file changes update the revision and request a fresh check; this policy
+does not claim a fixed upper bound for detecting or validating those changes.
 
 ## MVP 3 feedback
 

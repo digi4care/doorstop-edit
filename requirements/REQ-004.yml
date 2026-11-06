@@ -1,0 +1,18 @@
+active: true
+derived: false
+evidence: []
+header: ''
+level: 4.0
+links: []
+normative: true
+ref: ''
+references:
+- path: docs/validation-policy.md
+  type: file
+review_note: |
+  Uncovered: no automated test or review anchor directly verifies this requirement.
+reviewed: 8E0B7ReWKzAxtAFn8xr4sc_YHG0pTzeFUuVPED2J40U=
+source: ../docs/validation-policy.md#mvp-3-feedback
+text: |
+  Validation findings must never prevent saving or editing.
+verified: false

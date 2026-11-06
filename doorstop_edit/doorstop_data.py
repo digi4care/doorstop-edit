@@ -125,18 +125,26 @@ class DoorstopData(QObject):
 
     tree_changed = Signal((bool))  # Called when tree changed on disk
     item_saved = Signal()
+    contentChanged = Signal(str, int, str)
+    _fileWatchEvent = Signal(bool, object, int)
 
     def __init__(self, parent: Optional[QObject], root: Optional[Path] = None) -> None:
         super().__init__(parent=parent)
         self.root = root
         self._tree: Optional[doorstop.Tree] = None
         self.tree_stale = False
+        self.content_revision = 0
         self.item_metadata: Dict[str, ItemMetadata] = {}
-        self.item_load_errors: Dict[str, str] = {}
+        self._item_load_errors: Dict[str, str] = {}
+        self._fileWatchEvent.connect(self._process_filewatch_callback)
         self.file_watcher = FileWatcher(self._on_filewatch_callback)
 
     def has_root(self) -> bool:
         return self.root is not None
+
+    def item_load_errors(self) -> Dict[str, str]:
+        """Return a copy of current item load failures keyed by stable UID."""
+        return dict(self._item_load_errors)
 
     def start(self) -> None:
         self.file_watcher.start()
@@ -144,39 +152,52 @@ class DoorstopData(QObject):
     def stop(self) -> None:
         self.file_watcher.stop()
 
-    def _on_filewatch_callback(self, modified_only: bool, filename: str) -> None:
-        do_rebuild = False
+    def _on_filewatch_callback(self, modified_only: bool, paths: tuple[str, ...], generation: int) -> None:
+        self._fileWatchEvent.emit(modified_only, paths, generation)
+
+    @Slot(bool, object, int)
+    def _process_filewatch_callback(self, modified_only: bool, paths: object, generation: int) -> None:
+        if generation != self.file_watcher.generation or not isinstance(paths, tuple) or self.root is None:
+            return
+        root = self.root.resolve()
+        active = tuple(path for source in paths if (path := Path(source).resolve()).is_relative_to(root))
+        if not active:
+            return
+        do_rebuild = not modified_only
+        content_paths = []
         if modified_only:
-            item = self.find_item(Path(filename).stem)
-            if item is None:
-                do_rebuild = True
-            else:
+            for filename in active:
+                if ".doorstop" in filename.name:
+                    do_rebuild = True
+                    continue
+                item = self.find_item(filename.stem)
+                if item is None:
+                    do_rebuild = True
+                    continue
                 try:
                     item.load(reload=True)
                 except (doorstop.DoorstopError, ValueError, AttributeError) as exc:
-                    # Keep the tree available so validation can show this item.
-                    self.item_load_errors[str(item.uid)] = str(exc)
+                    self._item_load_errors[str(item.uid)] = str(exc)
                     logger.warning("Unable to load %s: %s", item.uid, exc)
                 else:
-                    self.item_load_errors.pop(str(item.uid), None)
-                self.tree_changed.emit(True)
-
-        if ".doorstop" in filename:
-            do_rebuild = True
-
-        if not modified_only or do_rebuild:
-            self.rebuild(only_reload=modified_only)
+                    self._item_load_errors.pop(str(item.uid), None)
+                content_paths.append(filename)
+        if do_rebuild:
+            self.rebuild(only_reload=modified_only, reason="watcher")
+        else:
+            self._publish_content_changed("external-edit")
+            self.tree_changed.emit(True)
 
     @Slot(bool)
     @time_function("Rebuilding document tree")
-    def rebuild(self, only_reload: bool = False, new_root: Optional[Path] = None) -> None:
+    def rebuild(self, only_reload: bool = False, new_root: Optional[Path] = None, reason: str = "rebuild") -> None:
         full_rebuild = new_root is not None or self._tree is None or not only_reload
         if full_rebuild:
             candidate_root = new_root if new_root is not None else self.root
             previous_root = self.root
             previous_tree = self._tree
             previous_tree_stale = self.tree_stale
-            previous_errors = self.item_load_errors
+            previous_errors = self._item_load_errors
             previous_docs = list(self.file_watcher.scheduled_docs)
             self.file_watcher.pause()
             try:
@@ -194,13 +215,13 @@ class DoorstopData(QObject):
                 self.root = candidate_root
                 self._tree = candidate_tree
                 self.tree_stale = False
-                self.item_load_errors = candidate_errors
+                self._item_load_errors = candidate_errors
                 self.file_watcher.watch(list(candidate_tree))
             except Exception:
                 self.root = previous_root
                 self._tree = previous_tree
                 self.tree_stale = previous_tree_stale
-                self.item_load_errors = previous_errors
+                self._item_load_errors = previous_errors
                 try:
                     self.file_watcher.watch(previous_docs)
                 except Exception:
@@ -211,6 +232,7 @@ class DoorstopData(QObject):
                 raise
             logger.debug("Loaded %d documents", len(self._tree.documents))
             self.tree_changed.emit(only_reload)
+            self._publish_content_changed(reason)
             return
 
         # Eagerly load valid items without letting one malformed item prevent
@@ -225,10 +247,10 @@ class DoorstopData(QObject):
                     item.load(reload=True)
                 except (doorstop.DoorstopError, ValueError, AttributeError) as exc:
                     has_invalid_item = True
-                    self.item_load_errors[str(item.uid)] = str(exc)
+                    self._item_load_errors[str(item.uid)] = str(exc)
                     logger.warning("Unable to load %s: %s", item.uid, exc)
                 else:
-                    self.item_load_errors.pop(str(item.uid), None)
+                    self._item_load_errors.pop(str(item.uid), None)
             if only_reload and not has_invalid_item:
                 # Preserve Doorstop's document config reload on ordinary refreshes.
                 document.load(reload=True)
@@ -236,6 +258,11 @@ class DoorstopData(QObject):
 
         self.file_watcher.watch(list(self.get_documents().values()))
         self.tree_changed.emit(only_reload)
+        self._publish_content_changed(reason)
+
+    def _publish_content_changed(self, reason: str) -> None:
+        self.content_revision += 1
+        self.contentChanged.emit(str(self.root or ""), self.content_revision, reason)
 
     def get_documents(self) -> Dict[str, doorstop.Document]:
         """Get all documents in doorstop tree.
@@ -404,7 +431,7 @@ class DoorstopData(QObject):
                 disk_item.load(reload=True)
             except (doorstop.DoorstopError, ValueError, AttributeError) as exc:
                 uid = str(item.uid)
-                self.item_load_errors[uid] = str(exc)
+                self._item_load_errors[uid] = str(exc)
                 logger.warning("Unable to load %s: %s", uid, exc)
                 self.tree_changed.emit(True)
                 raise ValueError(f"Cannot save invalid item {uid} until its file is valid") from exc
@@ -427,10 +454,11 @@ class DoorstopData(QObject):
 
         self.file_watcher.resume()
         self.item_saved.emit()
+        self._publish_content_changed("save")
 
     def get_item_load_error(self, uid: str) -> Optional[str]:
         """Return the most recent load error for an item, if it is invalid."""
-        return self.item_load_errors.get(uid)
+        return self._item_load_errors.get(uid)
 
     def get_original_data(self, item: doorstop.Item) -> Optional[str]:
         """None means no change."""
@@ -453,9 +481,42 @@ class DoorstopData(QObject):
             return
 
         p = Path(item.path)
-        p.write_text(orig, encoding="utf-8")
-        item.load(reload=True)  # Reload item to mirror content on disk.
+        self.file_watcher.pause()
+        try:
+            p.write_text(orig, encoding="utf-8")
+            item.load(reload=True)  # Reload item to mirror content on disk.
+        finally:
+            self.file_watcher.resume()
         self.item_metadata[str(item.uid)].original = None
+        self.item_saved.emit()
+        self._publish_content_changed("restore")
+
+    def delete_item(self, uid: str) -> None:
+        """Delete an item inside the active project and refresh the document tree."""
+        if self.tree_stale:
+            raise doorstop.DoorstopError("The document tree may be stale; reload the project before editing")
+        if self.root is None:
+            raise doorstop.DoorstopError("No project root is loaded")
+        item = self.find_item(uid)
+        if item is None:
+            raise doorstop.DoorstopError(f"Unknown item: {uid}")
+        path = Path(item.path)
+        if path.is_symlink():
+            raise doorstop.DoorstopError(f"Cannot delete item through symlink: {path}")
+        try:
+            path.resolve().relative_to(self.root.resolve())
+        except ValueError as exc:
+            raise doorstop.DoorstopError(f"Item path is outside project root: {path}") from exc
+
+        item.delete()
+        self.item_metadata.pop(str(item.uid), None)
+        try:
+            self.rebuild(only_reload=False, reason="delete")
+        except Exception as exc:
+            self.tree_stale = True
+            raise doorstop.DoorstopError(
+                f"Item {uid} was deleted, but the project tree could not be refreshed"
+            ) from exc
 
     def get_last_change(self, item: doorstop.Item) -> int:
         """Get timestamp of items last change/save.

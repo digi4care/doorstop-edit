@@ -1,0 +1,20 @@
+active: true
+derived: false
+evidence:
+- |
+  ../doorstop_edit/test/test_application.py#test_add_document_invalid_prefix_stays_open_and_cancel_does_not_create
+- |
+  ../doorstop_edit/test/test_application.py#test_add_document_selects_created_child
+header: ''
+level: 5.0
+links: []
+normative: true
+ref: ''
+references:
+- path: docs/document-management.md
+  type: file
+reviewed: 5cT1KrFLEDw9ZYSv7_TxilqNq4XknLjO0uFazU7MBIc=
+source: ../docs/document-management.md#adding-a-document
+text: |
+  Adding a document must reject invalid prefixes and existing destinations before creating anything; on success it must rebuild the tree, refresh the selector, and select the new document.
+verified: true

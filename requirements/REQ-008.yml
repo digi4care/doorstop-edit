@@ -1,0 +1,18 @@
+active: true
+derived: false
+evidence: []
+header: ''
+level: 8.0
+links: []
+normative: true
+ref: ''
+references:
+- path: docs/file-watcher.md
+  type: file
+review_note: |
+  Untestable: no existing named automated test or review anchor establishes event coalescing behavior.
+reviewed: VQMOb_KsbkZI8UruGDdvhF_ePwFIAwbhd3w_UIwb8Bk=
+source: ../docs/file-watcher.md#event-delivery
+text: |
+  The watcher must coalesce events within a 100 ms quiet period and deliver distinct content-change filenames, with a structural refresh taking precedence for mixed batches.
+verified: false
