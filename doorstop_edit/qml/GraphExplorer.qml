@@ -40,15 +40,24 @@ Pane {
     // Index only while visible. The backend has already published the snapshot on project open.
     onGraphChanged: if (active) rebuild()
 
+    function focusSearch() { searchField.forceActiveFocus() }
+
+    onFocusIdChanged: {
+        focusPath = ""
+        focusRelation = ""
+        focusEdge = null
+    }
+
     function rebuild() {
         if (!active) return
         if (lastProjectId !== (graph.projectId || "")) {
             focusId = ""
-            focusPath = ""
-            focusRelation = ""
-            focusEdge = null
             lastProjectId = graph.projectId || ""
         }
+        // Relations and paths belong to the old snapshot, even if the focused node survives.
+        focusPath = ""
+        focusRelation = ""
+        focusEdge = null
         const lookup = ({})
         const adjacency = ({})
         const ns = graph.nodes || []
@@ -166,9 +175,8 @@ Pane {
                 matchesList.push(ns[i])
         }
         results = matchesList
-        if (!nodesById[focusId] || (matchesList.length && !matches(nodesById[focusId])))
+        if (!matchesList.some(function(node) { return node.id === focusId }))
             focusId = matchesList.length ? matchesList[0].id : ""
-        if (!matchesList.length) focusId = ""
         updateMap()
     }
     function edgeAllowed(edge) {

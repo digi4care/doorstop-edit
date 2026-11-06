@@ -253,6 +253,7 @@ ApplicationWindow {
         property var returnFocusItem: null
         property bool navigatingToEditor: false
         property var navigationFocusTarget: null
+        onOpened: graphExplorer.focusSearch()
         onClosed: {
             if (root.pendingPanel) {
                 returnFocusItem = null
@@ -284,6 +285,7 @@ ApplicationWindow {
             })
         }
         GraphExplorer {
+            id: graphExplorer
             objectName: "graphExplorer"
             anchors.fill: parent
             active: graphDrawer.opened

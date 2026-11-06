@@ -193,7 +193,9 @@ export function createTuiPlugin(runBootstrap = async (cwd: string, args: string[
               return
             }
             try {
-              const cwd = location.directory
+              const session = context.data.session.get(sessionID)
+              if (!session) throw new Error("Session is unavailable")
+              const cwd = sessionCwd(session)
               const { taskID, header, text } = parsed.bootstrap
               const args = ["bootstrap", "--json", "--cwd", cwd, "--adapter-id", ADAPTER_ID, "--session-id", sessionID, "--confirm", "--task-id", taskID, "--header", header, "--text", text]
               const result = await runBootstrap(cwd, args)

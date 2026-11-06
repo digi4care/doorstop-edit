@@ -136,6 +136,26 @@ def test_qml_validation_service_requests_and_state_gating(
     assert service.shutdown_called
 
 
+def test_items_preserves_valid_rows_when_item_property_access_fails(qapp: QApplication, tmp_path: Path) -> None:
+    generate_tree(tmp_path, num_docs=1, num_req=1)
+    backend = cast(Any, QmlBackend(root=tmp_path))
+    backend.selectDocument("REQ-A")
+    valid = backend._data.find_item("REQ-A-001", "REQ-A")
+    assert valid is not None
+
+    class MalformedItem:
+        @property
+        def uid(self) -> str:
+            raise RuntimeError("malformed item")
+
+    backend._data.iter_items = lambda _doc: iter((valid, MalformedItem()))
+    rows = backend.items
+    assert rows[0]["uid"] == "REQ-A-001"
+    assert rows[1]["header"] == "Unable to load item: malformed item"
+    assert rows[1]["active"] is False
+    backend.shutdown()
+
+
 def test_qml_initial_open_publishes_and_requests_once(
     qapp: QApplication, monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -591,6 +611,7 @@ def test_qml_graph_explorer_search_activation_and_return(qapp: QApplication, qtb
     assert QMetaObject.invokeMethod(item("graphToggleButton"), "clicked")
     qtbot.waitUntil(lambda: bool(explorer.property("active")))
     search = item("graphSearchField")
+    qtbot.waitUntil(lambda: window.activeFocusItem() == search)
     search.setProperty("text", "REQ-A-002")
     results = item("graphResultsList")
     qtbot.waitUntil(lambda: results.property("count") == 1)
@@ -605,6 +626,87 @@ def test_qml_graph_explorer_search_activation_and_return(qapp: QApplication, qtb
     assert QMetaObject.invokeMethod(item("graphCloseButton"), "clicked")
     qtbot.waitUntil(lambda: not explorer.property("active"))
     assert backend.selectedItem["uid"] == "REQ-A-002"
+    dispose_qml(engine, backend, qapp)
+
+
+def test_qml_graph_exact_uid_replaces_focused_finding(qapp: QApplication, qtbot: QtBot, tmp_path: Path) -> None:
+    generate_tree(tmp_path, num_docs=1, num_req=2)
+    backend = cast(Any, QmlBackend(root=tmp_path))
+    assert backend.acceptValidationRun(
+        validation_result(
+            tmp_path,
+            backend._data.content_revision,
+            "finding-uid-search",
+            (ValidationFinding("warning", "REQ-A-002 has a broken link", "REQ-A-002"),),
+        )
+    )
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(Path(__file__).parents[1] / "qml" / "Main.qml")))
+    assert engine.rootObjects()
+    window = cast(QQuickWindow, engine.rootObjects()[0])
+    window.show()
+    explorer = cast(QQuickItem, window.findChild(QQuickItem, "graphExplorer"))
+    search = cast(QQuickItem, window.findChild(QQuickItem, "graphSearchField"))
+    assert explorer is not None and search is not None
+    toggle = window.findChild(QObject, "graphToggleButton")
+    assert toggle is not None and QMetaObject.invokeMethod(toggle, "clicked")
+    qtbot.waitUntil(lambda: bool(explorer.property("active")))
+
+    search.setProperty("text", "broken link")
+    qtbot.waitUntil(lambda: len(explorer.property("results").toVariant()) == 1)
+    finding_id = explorer.property("results").toVariant()[0]["id"]
+    assert explorer.property("focusId") == finding_id
+    search.setProperty("text", "REQ-A-002")
+    qtbot.waitUntil(lambda: explorer.property("focusId") == "item:REQ-A-002")
+    assert [node["id"] for node in explorer.property("results").toVariant()] == ["item:REQ-A-002"]
+    close_button = window.findChild(QObject, "graphCloseButton")
+    assert close_button is not None and QMetaObject.invokeMethod(close_button, "clicked")
+    qtbot.waitUntil(lambda: not explorer.property("active"))
+    qtbot.waitUntil(lambda: window.activeFocusItem() == toggle)
+    dispose_qml(engine, backend, qapp)
+
+
+def test_qml_graph_snapshot_clears_removed_relation_not_project_focus(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    from PySide6.QtCore import Q_ARG
+
+    generate_tree(tmp_path, num_docs=1, num_req=2)
+    backend = cast(Any, QmlBackend(root=tmp_path))
+    backend.selectDocument("REQ-A")
+    backend.selectItem("REQ-A-001")
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(Path(__file__).parents[1] / "qml" / "Main.qml")))
+    assert engine.rootObjects()
+    window = cast(QQuickWindow, engine.rootObjects()[0])
+    window.show()
+    toggle = window.findChild(QObject, "graphToggleButton")
+    explorer = cast(QQuickItem, window.findChild(QQuickItem, "graphExplorer"))
+    assert toggle is not None and explorer is not None
+    assert QMetaObject.invokeMethod(toggle, "clicked")
+    qtbot.waitUntil(lambda: explorer.property("focusId") == "item:REQ-A-001")
+    document_entry = next(
+        entry for entry in explorer.property("mapNodes").toVariant() if entry["node"]["id"] == "document:REQ-A"
+    )
+    assert QMetaObject.invokeMethod(
+        explorer,
+        "choose",
+        Q_ARG("QVariant", document_entry["node"]),
+        Q_ARG("QVariant", document_entry["relation"]),
+        Q_ARG("QVariant", document_entry["path"]),
+        Q_ARG("QVariant", document_entry["edge"]),
+    )
+    assert explorer.property("focusId") == "document:REQ-A"
+    assert explorer.property("focusEdge") is not None
+    assert explorer.property("focusRelation") == "Contains item"
+
+    backend._data.delete_item("REQ-A-001")
+    qtbot.waitUntil(lambda: explorer.property("focusEdge") is None)
+    assert explorer.property("focusId") == "document:REQ-A"
+    assert explorer.property("focusPath") == ""
+    assert explorer.property("focusRelation") == ""
     dispose_qml(engine, backend, qapp)
 
 

@@ -170,16 +170,30 @@ class QmlBackend(QtCore.QObject):
         doc = self._data.find_document(self._selected_document)
         if doc is None:
             return []
-        return [
-            {
-                "uid": str(item.uid),
-                "level": str(item.level),
-                "header": str(item.header),
-                "active": bool(item.active),
-                "normative": bool(item.normative),
-            }
-            for item in self._data.iter_items(doc)
-        ]
+        rows = []
+        for item in self._data.iter_items(doc):
+            try:
+                rows.append(
+                    {
+                        "uid": str(item.uid),
+                        "level": str(item.level),
+                        "header": str(item.header),
+                        "active": bool(item.active),
+                        "normative": bool(item.normative),
+                    }
+                )
+            except Exception as error:
+                # A damaged item must not make the entire QML model unavailable.
+                rows.append(
+                    {
+                        "uid": "",
+                        "level": "",
+                        "header": f"Unable to load item: {error}",
+                        "active": False,
+                        "normative": False,
+                    }
+                )
+        return rows
 
     @QtCore.Property(dict, notify=selectedItemChanged)
     def selectedItem(self) -> dict:
