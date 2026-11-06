@@ -137,7 +137,7 @@ def _provenance_primitives(provenance: Provenance) -> dict[str, str | int | None
 def _attr(obj: Any, name: str, default: Any = None) -> Any:
     try:
         return getattr(obj, name)
-    except (doorstop.DoorstopError, AttributeError, TypeError, ValueError, OSError):
+    except (doorstop.DoorstopError, AttributeError, TypeError, ValueError, OSError, RuntimeError):
         return default
 
 
@@ -229,7 +229,7 @@ def build_app_knowledge_graph(
                 uid_obj = _attr(item, "uid")
                 uid = str(_attr(uid_obj, "value", uid_obj))
                 records[uid] = (item, str(prefix), _relative(root, _attr(item, "path")))
-        except doorstop.DoorstopError:
+        except (doorstop.DoorstopError, RuntimeError):
             continue
 
     for uid, (item, prefix, path) in records.items():
@@ -264,7 +264,7 @@ def build_app_knowledge_graph(
                     reviewed="reviewed" if reviewed else "needsReview",
                     loadState="loaded",
                 )
-            except doorstop.DoorstopError as exc:
+            except (doorstop.DoorstopError, RuntimeError) as exc:
                 add_node(
                     iid,
                     "Item",
@@ -305,7 +305,7 @@ def build_app_knowledge_graph(
                             actual = getattr(target[0], "stamp")
                             actual = actual() if callable(actual) else actual
                             status = "ok" if stored == actual else "suspect"
-                        except (doorstop.DoorstopError, AttributeError, TypeError, ValueError, OSError):
+                        except (doorstop.DoorstopError, AttributeError, TypeError, ValueError, OSError, RuntimeError):
                             actual = _MISSING
                             status = "unknown"
                     else:

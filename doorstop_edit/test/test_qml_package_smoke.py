@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -16,6 +17,41 @@ from PySide6.QtWebEngineQuick import QtWebEngineQuick
 
 from doorstop_edit.qml_backend import QmlBackend
 from doorstop_edit.qml_render_bridge import QmlRenderBridge
+
+_NATIVE_PLACEHOLDER_WIDTH_LOOP = re.compile(
+    r"^qrc:/qt-project.org/imports/QtQuick/NativeStyle/controls/DefaultTextArea\.qml:"
+    r"\d+:\d+: QML PlaceholderText: Binding loop detected for property \"width\"$"
+)
+
+
+def _unexpected_qml_warnings(warnings: list[str], platform: str) -> list[str]:
+    """Keep warnings fatal except Qt 6.11 NativeStyle's known placeholder loop."""
+    known = [warning for warning in warnings if _NATIVE_PLACEHOLDER_WIDTH_LOOP.fullmatch(warning)]
+    unexpected = [warning for warning in warnings if not _NATIVE_PLACEHOLDER_WIDTH_LOOP.fullmatch(warning)]
+    if platform in {"win32", "darwin"} and len(known) <= 2:
+        return unexpected
+    return warnings
+
+
+def test_known_native_placeholder_warning_is_narrowly_allowlisted() -> None:
+    platform = "win32"
+    warning = (
+        "qrc:/qt-project.org/imports/QtQuick/NativeStyle/controls/DefaultTextArea.qml:38:9: "
+        'QML PlaceholderText: Binding loop detected for property "width"'
+    )
+    assert _unexpected_qml_warnings([warning, warning], platform) == []
+    assert _unexpected_qml_warnings([warning, warning, warning], platform) == [warning, warning, warning]
+    assert _unexpected_qml_warnings([warning, "another warning"], platform) == ["another warning"]
+    assert _unexpected_qml_warnings([warning, warning], "darwin") == []
+
+
+def test_native_placeholder_warning_is_not_allowlisted_on_linux() -> None:
+    platform = "linux"
+    warning = (
+        "qrc:/qt-project.org/imports/QtQuick/NativeStyle/controls/DefaultTextArea.qml:38:9: "
+        'QML PlaceholderText: Binding loop detected for property "width"'
+    )
+    assert _unexpected_qml_warnings([warning], platform) == [warning]
 
 
 def main() -> None:
@@ -33,8 +69,8 @@ def main() -> None:
     engine = QQmlApplicationEngine()
     backend = QmlBackend(root=None)
     renderer = QmlRenderBridge(backend, engine)
-    failures: list[str] = []
-    engine.warnings.connect(lambda warnings: failures.extend(w.toString() for w in warnings))
+    warnings: list[str] = []
+    engine.warnings.connect(lambda messages: warnings.extend(w.toString() for w in messages))
     engine.rootContext().setContextProperty("backend", backend)
     engine.rootContext().setContextProperty("previewRenderer", renderer)
     try:
@@ -62,8 +98,9 @@ def main() -> None:
         app.processEvents()
         del renderer, backend, engine
 
-    if failures:
-        raise AssertionError("QML runtime reported warnings/errors:\n" + "\n".join(failures))
+    unexpected = _unexpected_qml_warnings(warnings, sys.platform)
+    if unexpected:
+        raise AssertionError("QML runtime reported warnings/errors:\n" + "\n".join(unexpected))
     del app
 
 

@@ -629,8 +629,12 @@ def test_qml_graph_explorer_search_activation_and_return(qapp: QApplication, qtb
     dispose_qml(engine, backend, qapp)
 
 
-def test_qml_graph_exact_uid_replaces_focused_finding(qapp: QApplication, qtbot: QtBot, tmp_path: Path) -> None:
+def test_qml_graph_exact_uid_replaces_focused_finding(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
     generate_tree(tmp_path, num_docs=1, num_req=2)
+    FakeValidationService.instances.clear()
+    monkeypatch.setattr("doorstop_edit.qml_backend.ValidationService", FakeValidationService)
     backend = cast(Any, QmlBackend(root=tmp_path))
     assert backend.acceptValidationRun(
         validation_result(
