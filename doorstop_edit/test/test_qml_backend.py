@@ -148,6 +148,47 @@ def test_qml_initial_open_publishes_and_requests_once(
     backend.shutdown()
 
 
+def test_request_validation_slot_uses_current_root_and_revision(
+    qapp: QApplication, monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    generate_tree(tmp_path, num_docs=1, num_req=1)
+    FakeValidationService.instances.clear()
+    monkeypatch.setattr("doorstop_edit.qml_backend.ValidationService", FakeValidationService)
+    backend = cast(Any, QmlBackend(root=tmp_path))
+    service = FakeValidationService.instances[-1]
+    service.requests.clear()
+    backend.requestValidation()
+    assert service.requests == [(tmp_path.resolve(), backend._data.content_revision)]
+    backend.shutdown()
+
+
+def test_save_validation_request_only_after_success(
+    qapp: QApplication, monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    generate_tree(tmp_path, num_docs=1, num_req=1)
+    FakeValidationService.instances.clear()
+    monkeypatch.setattr("doorstop_edit.qml_backend.ValidationService", FakeValidationService)
+    backend = cast(Any, QmlBackend(root=tmp_path))
+    service = FakeValidationService.instances[-1]
+    service.requests.clear()
+    backend.selectDocument("REQ-A")
+    backend.selectItem("REQ-A-001")
+    backend.saveSelected("Updated", "Updated body")
+    assert service.requests == [(tmp_path.resolve(), backend._data.content_revision)]
+
+    service.requests.clear()
+    saved: list[bool] = []
+    errors: list[str] = []
+    backend._data.item_saved.connect(lambda: saved.append(True))
+    backend.errorMessageChanged.connect(lambda: errors.append(backend.errorMessage))
+    backend._data.save_item = lambda _item: (_ for _ in ()).throw(OSError("save failed"))
+    backend.saveSelected("Failed", "Failed body")
+    assert service.requests == []
+    assert saved == []
+    assert errors and errors[-1] == "save failed"
+    backend.shutdown()
+
+
 def test_initial_running_validation_is_included_in_first_graph_snapshot(
     qapp: QApplication, monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -199,6 +240,125 @@ def test_qml_engine_loads(qapp: QApplication) -> None:
     engine.rootContext().setContextProperty("backend", backend)
     engine.load(QUrl.fromLocalFile(str(Path(__file__).parents[1] / "qml" / "Main.qml")))
     assert engine.rootObjects()
+    dispose_qml(engine, backend, qapp)
+
+
+def test_qml_validation_controls_request_and_exclusive_panels(
+    qapp: QApplication, qtbot: QtBot, monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    generate_tree(tmp_path, num_docs=1, num_req=1)
+    FakeValidationService.instances.clear()
+    monkeypatch.setattr("doorstop_edit.qml_backend.ValidationService", FakeValidationService)
+    backend = cast(Any, QmlBackend(root=tmp_path))
+    service = FakeValidationService.instances[-1]
+    service.requests.clear()
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(Path(__file__).parents[1] / "qml" / "Main.qml")))
+    assert engine.rootObjects()
+    window = cast(QQuickWindow, engine.rootObjects()[0])
+    window.show()
+    qapp.processEvents()
+
+    def item(name: str) -> QQuickItem:
+        found = window.findChild(QQuickItem, name)
+        assert found is not None, f"QML item {name!r} was not created"
+        return found
+
+    validate = item("validateProjectButton")
+    assert validate.property("enabled")
+    assert QMetaObject.invokeMethod(validate, "clicked")
+    assert service.requests == [(tmp_path.resolve(), backend._data.content_revision)]
+
+    summary = item("validationSummaryButton")
+    assert QMetaObject.invokeMethod(summary, "clicked")
+    results = window.findChild(QObject, "validationDrawer")
+    assert results is not None
+    qtbot.waitUntil(lambda: bool(results.property("opened")))
+    validation_list = item("validationResultsList")
+    validation_list.forceActiveFocus()
+    window.requestActivate()
+    qapp.processEvents()
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+    qtbot.waitUntil(lambda: not results.property("opened"))
+    qtbot.waitUntil(lambda: window.activeFocusItem() == summary)
+    assert QMetaObject.invokeMethod(summary, "clicked")
+    qtbot.waitUntil(lambda: bool(results.property("opened")))
+    assert QMetaObject.invokeMethod(item("graphToggleButton"), "clicked")
+    qtbot.waitUntil(lambda: bool(item("graphExplorer").property("active")))
+    assert not results.property("opened")
+    assert QMetaObject.invokeMethod(item("graphToggleButton"), "clicked")
+    qtbot.waitUntil(lambda: not item("graphExplorer").property("active"))
+    dispose_qml(engine, backend, qapp)
+
+
+def test_qml_validation_finding_opens_associated_item(qapp: QApplication, qtbot: QtBot, tmp_path: Path) -> None:
+    generate_tree(tmp_path, num_docs=1, num_req=2)
+    FakeValidationService.instances.clear()
+    backend = cast(Any, QmlBackend(root=tmp_path))
+    backend.selectDocument("REQ-A")
+    backend.selectItem("REQ-A-001")
+    revision = backend._data.content_revision
+    assert backend.acceptValidationRun(
+        validation_result(
+            tmp_path,
+            revision,
+            "finding-navigation",
+            (
+                ValidationFinding("error", "REQ-A-002 has a broken link", "REQ-A-002"),
+                ValidationFinding("warning", "Project-level warning", None),
+            ),
+        )
+    )
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(Path(__file__).parents[1] / "qml" / "Main.qml")))
+    assert engine.rootObjects()
+    window = cast(QQuickWindow, engine.rootObjects()[0])
+    window.show()
+    qapp.processEvents()
+
+    def item(name: str) -> QQuickItem:
+        found = window.findChild(QQuickItem, name)
+        assert found is not None, f"QML item {name!r} was not created"
+        return found
+
+    summary = item("validationSummaryButton")
+    assert "1 error" in summary.property("text")
+    assert "1 warning" in summary.property("text")
+    assert QMetaObject.invokeMethod(summary, "clicked")
+    results = item("validationResultsList")
+    qtbot.waitUntil(lambda: results.property("count") == 2)
+    results.setProperty("currentIndex", 0)
+    delegate = results.property("currentItem")
+    assert delegate is not None
+    assert QMetaObject.invokeMethod(delegate, "activate")
+    qtbot.waitUntil(lambda: backend.selectedItem["uid"] == "REQ-A-002")
+    results_panel = window.findChild(QObject, "validationDrawer")
+    assert results_panel is not None
+    qtbot.waitUntil(lambda: not results_panel.property("opened"))
+    assert item("headerField").property("text") == backend.selectedItem["header"]
+
+    assert QMetaObject.invokeMethod(summary, "clicked")
+    qtbot.waitUntil(lambda: results_panel.property("opened"))
+    results.setProperty("currentIndex", 1)
+    project_finding = results.property("currentItem")
+    assert project_finding is not None
+    assert QMetaObject.invokeMethod(project_finding, "activate")
+    assert backend.selectedItem["uid"] == "REQ-A-002"
+    assert results_panel.property("opened"), "project finding should stay in the results panel"
+
+    assert backend.acceptValidationRun(
+        validation_result(tmp_path, revision, "validation-failed", state="failed", error="validator unavailable")
+    )
+    qapp.processEvents()
+    assert "Validation failed" in item("validationSummaryButton").property("text")
+    failure_labels = [
+        child
+        for child in window.findChildren(QQuickItem)
+        if child.property("text") == "Validation error: validator unavailable"
+    ]
+    assert failure_labels and failure_labels[0].property("visible")
     dispose_qml(engine, backend, qapp)
 
 

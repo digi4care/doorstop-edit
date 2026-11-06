@@ -17,6 +17,38 @@ ApplicationWindow {
     property string editorUid: ""
     property bool externalConflict: false
     property bool saveInProgress: false
+    property string pendingPanel: ""
+    readonly property var validationGraph: backend.appGraph || ({})
+    readonly property var validationRun: validationGraph.validationRun || ({})
+    readonly property var validationFindings: {
+        const result = []
+        const nodes = validationGraph.nodes || []
+        for (let i = 0; i < nodes.length; ++i)
+            if (nodes[i].type === "ValidationFinding") result.push(nodes[i])
+        return result
+    }
+    readonly property int validationErrors: validationFindings.filter(function(n) { return n.severity === "error" }).length
+    readonly property int validationWarnings: validationFindings.filter(function(n) { return n.severity === "warning" }).length
+    readonly property bool validationOutdated: validationFindings.some(function(n) { return n.state === "stale" })
+    function validationCount(count, singular, plural) {
+        return count + " " + (count === 1 ? singular : plural)
+    }
+    readonly property string validationSummary: {
+        if (!backend.projectRoot) return "Open a project to validate."
+        const state = validationRun.state || "notRun"
+        const label = state === "notRun" ? "Not yet validated" : state === "running" ? "Validation running…"
+                    : state === "failed" ? "Validation failed" : "Validation complete"
+        return label + " · " + validationCount(validationErrors, "error", "errors") + " · "
+               + validationCount(validationWarnings, "warning", "warnings")
+               + (validationOutdated ? " · Prior findings outdated" : "")
+    }
+
+    function openPendingPanel() {
+        const next = pendingPanel
+        pendingPanel = ""
+        if (next === "graph") graphDrawer.open()
+        else if (next === "validation") validationDrawer.open()
+    }
 
     function toggleGraph() {
         if (graphDrawer.opened) {
@@ -25,13 +57,44 @@ ApplicationWindow {
             const focused = root.activeFocusItem
             graphDrawer.returnFocusItem = focused && focused.activeFocusOnTab
                                          ? focused : graphToggleButton
-            graphDrawer.open()
+            if (validationDrawer.visible) {
+                pendingPanel = "graph"
+                validationDrawer.close()
+            } else graphDrawer.open()
         }
     }
 
-    function openGraphNode(node) {
+    function toggleValidation() {
+        if (validationDrawer.opened) {
+            validationDrawer.close()
+        } else {
+            const focused = root.activeFocusItem
+            validationDrawer.returnFocusItem = focused && focused.activeFocusOnTab
+                                              ? focused : validationSummaryButton
+            if (graphDrawer.visible) {
+                pendingPanel = "validation"
+                graphDrawer.close()
+            } else validationDrawer.open()
+        }
+    }
+
+    function findingItem(uid) {
+        if (!uid) return null
+        const nodes = validationGraph.nodes || []
+        for (let i = 0; i < nodes.length; ++i)
+            if (nodes[i].type === "Item" && nodes[i].uid === uid) return nodes[i]
+        return null
+    }
+
+    function openFinding(finding) {
+        const item = finding && findingItem(finding.itemUid)
+        if (item) openGraphNode(item, validationDrawer)
+    }
+
+    function openGraphNode(node, sourceDrawer) {
         if (!node || (node.type !== "Item" && node.type !== "Document"))
             return
+        const drawer = sourceDrawer || graphDrawer
         const prefix = node.type === "Document" ? node.prefix
                         : String(node.documentId || "").replace(/^document:/, "")
         if (!prefix)
@@ -60,9 +123,9 @@ ApplicationWindow {
                 }
                 backend.selectItem(node.uid)
             }
-            graphDrawer.navigatingToEditor = true
-            graphDrawer.navigationFocusTarget = node.type === "Item" ? headerField : documentList
-            graphDrawer.close()
+            drawer.navigatingToEditor = true
+            drawer.navigationFocusTarget = node.type === "Item" ? headerField : documentList
+            drawer.close()
         })
     }
     readonly property var selection: backend.selectedItem || ({})
@@ -168,6 +231,16 @@ ApplicationWindow {
         onActivated: root.toggleGraph()
     }
 
+    Shortcut {
+        sequence: "Escape"
+        context: Qt.WindowShortcut
+        enabled: graphDrawer.opened || validationDrawer.opened
+        onActivated: {
+            if (validationDrawer.opened) validationDrawer.close()
+            else graphDrawer.close()
+        }
+    }
+
     Drawer {
         id: graphDrawer
         objectName: "graphDrawer"
@@ -181,6 +254,11 @@ ApplicationWindow {
         property bool navigatingToEditor: false
         property var navigationFocusTarget: null
         onClosed: {
+            if (root.pendingPanel) {
+                returnFocusItem = null
+                root.openPendingPanel()
+                return
+            }
             const destination = returnFocusItem
             const openingEditor = navigatingToEditor
             const editorTarget = navigationFocusTarget
@@ -213,6 +291,173 @@ ApplicationWindow {
             graph: active ? (backend.appGraph || ({})) : ({})
             onCloseRequested: graphDrawer.close()
             onActivateNode: function(node) { root.openGraphNode(node) }
+        }
+    }
+
+    Drawer {
+        id: validationDrawer
+        objectName: "validationDrawer"
+        edge: Qt.RightEdge
+        modal: false
+        interactive: false
+        width: Math.min(root.width - 12, 540)
+        height: root.height
+        padding: 0
+        property var returnFocusItem: null
+        property bool navigatingToEditor: false
+        property var navigationFocusTarget: null
+        onOpened: validationList.forceActiveFocus()
+        onClosed: {
+            if (root.pendingPanel) {
+                returnFocusItem = null
+                root.openPendingPanel()
+                return
+            }
+            const destination = returnFocusItem
+            const openingEditor = navigatingToEditor
+            const editorTarget = navigationFocusTarget
+            returnFocusItem = null
+            navigatingToEditor = false
+            navigationFocusTarget = null
+            Qt.callLater(function() {
+                if (validationDrawer.opened || graphDrawer.opened) return
+                if (openingEditor && editorTarget && editorTarget.enabled)
+                    editorTarget.forceActiveFocus()
+                else if (destination && destination !== root && destination.visible && destination.enabled)
+                    destination.forceActiveFocus()
+                else validationSummaryButton.forceActiveFocus()
+            })
+        }
+        background: Rectangle { color: "#14202b"; border.color: "#55717a"; border.width: 1 }
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 18
+            spacing: 12
+            RowLayout {
+                Layout.fillWidth: true
+                Label {
+                    Layout.fillWidth: true
+                    text: "VALIDATION  /  RESULTS"
+                    font.family: "DejaVu Sans Mono"
+                    font.pixelSize: 16
+                    font.bold: true
+                    color: "#7ddac4"
+                }
+                Button {
+                    objectName: "validationCloseButton"
+                    text: "Back to editor ✕"
+                    Accessible.name: "Close validation results and return to editor"
+                    onClicked: validationDrawer.close()
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                text: root.validationSummary
+                color: root.validationRun.state === "failed" || root.validationErrors ? "#ffc39f" : "#b4cbd0"
+                font.bold: true
+                wrapMode: Text.WordWrap
+                Accessible.name: text
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: root.validationOutdated
+                text: "Prior findings are outdated. Project content changed since that run; validate again for current results."
+                color: "#f4d590"
+                wrapMode: Text.WordWrap
+                Accessible.name: text
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: root.validationRun.state === "failed"
+                text: root.validationRun.error ? "Validation error: " + root.validationRun.error
+                                               : "Validation could not complete. Try again."
+                color: "#ffc39f"
+                wrapMode: Text.WordWrap
+                Accessible.name: text
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: root.validationRun.state === "succeeded" && root.validationFindings.length === 0
+                text: "No findings."
+                color: "#7ddac4"
+                Accessible.name: text
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: root.validationRun.state === "notRun" && root.validationFindings.length === 0
+                text: "Run validation to see findings here."
+                color: "#b4cbd0"
+                Accessible.name: text
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: root.validationRun.state === "running" && root.validationFindings.length === 0
+                text: "Checking project…"
+                color: "#b4cbd0"
+                Accessible.name: text
+            }
+            ListView {
+                id: validationList
+                objectName: "validationResultsList"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                activeFocusOnTab: true
+                keyNavigationWraps: true
+                model: root.validationFindings
+                Accessible.role: Accessible.List
+                Accessible.name: "Validation findings. Use arrow keys to select; Enter or Space opens an item finding."
+                Keys.onReturnPressed: if (currentItem) currentItem.activate()
+                Keys.onEnterPressed: if (currentItem) currentItem.activate()
+                Keys.onSpacePressed: if (currentItem) currentItem.activate()
+                Keys.onEscapePressed: validationDrawer.close()
+                delegate: ItemDelegate {
+                    id: findingRow
+                    objectName: "validationFindingRow"
+                    readonly property var finding: modelData
+                    readonly property bool itemFinding: !!root.findingItem(finding.itemUid)
+                    width: validationList.width
+                    height: Math.max(78, findingContent.implicitHeight + 20)
+                    activeFocusOnTab: false
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: finding.severity + (finding.itemUid ? ", " + finding.itemUid : ", project")
+                                     + ": " + finding.message + (finding.state === "stale" ? ", outdated" : "")
+                    Accessible.description: itemFinding ? "Enter or Space opens this item in the editor."
+                                            : finding.itemUid ? "Item unavailable; details only."
+                                            : "Project-level finding; details only."
+                    function activate() { if (itemFinding) root.openFinding(finding) }
+                    onClicked: {
+                        validationList.currentIndex = index
+                        validationList.forceActiveFocus()
+                        activate()
+                    }
+                    background: Rectangle {
+                        color: validationList.currentIndex === index ? "#236a68" : "#21333e"
+                        radius: 4
+                        border.width: validationList.activeFocus && validationList.currentIndex === index ? 2 : 0
+                        border.color: "#ffffff"
+                    }
+                    contentItem: ColumnLayout {
+                        id: findingContent
+                        spacing: 4
+                        Label {
+                            Layout.fillWidth: true
+                            text: findingRow.finding.severity.toUpperCase()
+                                  + "  ·  " + (findingRow.finding.itemUid || "Project")
+                                  + (findingRow.finding.state === "stale" ? "  ·  OUTDATED" : "")
+                            font.bold: true
+                            color: findingRow.finding.severity === "error" ? "#ffc39f"
+                                 : findingRow.finding.severity === "warning" ? "#f4d590" : "#7ddac4"
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: findingRow.finding.message
+                            color: "#e8f1f2"
+                            wrapMode: Text.Wrap
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -288,6 +533,29 @@ ApplicationWindow {
                     Accessible.name: graphDrawer.opened ? "Close graph, Ctrl+G" : "Explore project graph, Ctrl+G"
                     onClicked: root.toggleGraph()
                 }
+            }
+        }
+
+        RowLayout {
+            objectName: "validationControls"
+            Layout.fillWidth: true
+            spacing: 8
+            Button {
+                objectName: "validateProjectButton"
+                text: "Validate project"
+                enabled: !!backend.projectRoot && root.validationRun.state !== "running"
+                Accessible.name: "Validate project"
+                onClicked: backend.requestValidation()
+            }
+            Button {
+                id: validationSummaryButton
+                objectName: "validationSummaryButton"
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                text: root.validationSummary + "  ›"
+                enabled: !!backend.projectRoot
+                Accessible.name: "Show validation results. " + root.validationSummary
+                onClicked: root.toggleValidation()
             }
         }
 

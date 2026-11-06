@@ -41,6 +41,7 @@ class QmlBackend(QtCore.QObject):
         self._level = ""
         self._text = ""
         self._opening_project = False
+        self._shutdown = False
         self._graph: dict = {}
         self._graph_generation = 0
         self._validation: Optional[ValidationRunResult] = None
@@ -194,6 +195,13 @@ class QmlBackend(QtCore.QObject):
         if path:
             self.openProject(path)
 
+    @QtCore.Slot()
+    def requestValidation(self) -> None:
+        """Request validation for the current project content revision."""
+        if self._shutdown or self._data.root is None:
+            return
+        self._validation_service.request(self._data.root.resolve(), self._data.content_revision)
+
     @QtCore.Slot(str)
     def openProject(self, path: str) -> None:
         if not Path(path).is_dir():
@@ -287,5 +295,6 @@ class QmlBackend(QtCore.QObject):
 
     @QtCore.Slot()
     def shutdown(self) -> None:
+        self._shutdown = True
         self._validation_service.shutdown()
         self._data.stop()
