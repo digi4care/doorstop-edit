@@ -66,7 +66,10 @@ while service._active is not None and time.monotonic() < cleanup_deadline:
 app.processEvents()
 if service._active is not None:
     raise SystemExit('validation cleanup did not reach a terminal state')
-process_reaped = run.owner.supervisor_reaped
+if sys.platform == 'win32':
+    process_reaped = run.owner._termination_confirmed
+else:
+    process_reaped = run.owner.supervisor_reaped
 print(f"validation_helper_reaped {process_reaped}", flush=True)
 if not process_reaped:
     raise SystemExit(7)
@@ -206,6 +209,22 @@ app.processEvents()
 if service._active is not None: raise SystemExit('cleanup did not reach a terminal state')
 limit = time.monotonic() + 3
 def gone(pid):
+    if os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel32.OpenProcess(0x00100000, False, pid)
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == 87: return True
+            raise OSError(error, 'OpenProcess failed')
+        try: return kernel32.WaitForSingleObject(handle, 0) == 0
+        finally: kernel32.CloseHandle(handle)
     try: os.kill(pid, 0)
     except ProcessLookupError: return True
     if sys.platform.startswith('linux'):
@@ -312,6 +331,7 @@ def test_crash_log_records_validation_lifecycle_without_private_data(tmp_path: P
     assert all(str(project) not in json.dumps(event) for event in lifecycle)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX killpg monkeypatch is not used by the Windows Job Object path")
 def test_descendant_regression_detects_direct_helper_kill(tmp_path: Path) -> None:
     project, sentinel = tmp_path / "project", tmp_path / "processes.started"
     project.mkdir()

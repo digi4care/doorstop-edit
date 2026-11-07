@@ -560,21 +560,54 @@ def test_stale_document_tree_remains_disabled_after_tree_change(qtbot: QtBot, ap
     assert app.window.ui.item_edit_uid.text() == ""
 
 
-def test_validation_service_retains_temp_while_process_runs(qtbot: QtBot, tmp_path: Path) -> None:
+def test_validation_service_retains_temp_while_process_runs(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from doorstop_edit.validation_service import ValidationService
 
     service = ValidationService()
+    polled: list[bool] = []
+
+    class UnfinishedOwner:
+        group_id = 1
+        supervisor_reaped = False
+        _termination_confirmed = True
+
+        def poll_helper(self) -> int | None:
+            polled.append(True)
+            return None
+
+        def read_status(self) -> bytes | None:
+            polled.append(True)
+            return None
+
+        def signal_group(self) -> None:
+            pass
+
+        def reap_supervisor(self, timeout: float = 0.5) -> Any:
+            self.supervisor_reaped = True
+            return type("ReapResult", (), {"supervisor_reaped": True})()
+
+        def confirm_group_absent(self, timeout: float = 0.5) -> bool:
+            return True
+
+        def terminate_tree(self, timeout: float = 0.5) -> bool:
+            return True
+
+        def close(self, timeout: float = 0.5) -> bool:
+            return True
+
+    owner = UnfinishedOwner()
+    monkeypatch.setattr(service, "_launch_owner", lambda *args: owner)
     service.request(tmp_path, 4)
     run = service._active
     assert run is not None
     result_dir = run.temp_dir
-    assert result_dir.exists()
+    qtbot.waitUntil(lambda: bool(polled), timeout=5000)
+    assert result_dir.exists(), "uncompleted helper must retain its result directory"
     service.shutdown()
     assert run.cleanup_event.wait(5)
-    # cleanup_event is set on the worker before its result signal is delivered.
-    # Keep the QObject on its owning thread until that queued callback is handled.
     qtbot.waitUntil(lambda: service._active is None, timeout=5000)
-    assert result_dir.exists(), "shutdown did not process a completed helper result"
 
 
 def test_quit_marks_shutdown_before_stopping_watcher(qtbot: QtBot, app: DoorstopEdit) -> None:

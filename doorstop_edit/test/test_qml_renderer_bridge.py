@@ -64,8 +64,16 @@ ApplicationWindow {
         assert isinstance(window, QQuickWindow), component.errors()
         preview = window.findChild(QObject, "renderPreview")
         assert preview is not None
-        qtbot.waitUntil(lambda: renderer._render_started, timeout=15000)
-        qtbot.waitUntil(lambda: bool(renderer._channel_ready), timeout=15000)
+        web_view = window.findChild(QObject, "renderWebView")
+        assert web_view is not None
+        qtbot.waitUntil(lambda: renderer._render_started or bool(renderer.errorMessage), timeout=15000)
+        assert renderer._render_started, (
+            "WebEngine/WebChannel readiness did not start rendering: "
+            f"loaded={renderer._loaded}, channel_ready={renderer._channel_ready}, "
+            f"generation={renderer._page_generation}, web_loading={web_view.property('loading')}, "
+            f"web_progress={web_view.property('loadProgress')}, web_url={web_view.property('url')}, "
+            f"error={renderer.errorMessage!r}, qml_warnings={qml_warnings!r}"
+        )
         qtbot.waitUntil(lambda: renderer.progress == 100 or bool(renderer.errorMessage), timeout=30000)
         assert not renderer.errorMessage, f"Markdown rendering failed: {renderer.errorMessage}"
 

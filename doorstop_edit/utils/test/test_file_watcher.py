@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from pytest import MonkeyPatch
 from watchdog.events import FileDeletedEvent, FileModifiedEvent
 from watchdog.observers import Observer
+from watchdog.observers.api import BaseObserver
 from watchdog.observers.polling import PollingObserver
 
 import doorstop_edit.utils.file_watcher as file_watcher_module
@@ -239,7 +240,9 @@ def test_watch_schedules_once_before_start_and_while_running(tmp_path: Path, mon
     root = tmp_path / "root"
     root.mkdir()
     scheduled: list[str] = []
-    monkeypatch.setattr(Observer, "schedule", lambda _observer, _handler, path, recursive=False: scheduled.append(path))
+    monkeypatch.setattr(
+        BaseObserver, "schedule", lambda _observer, _handler, path, recursive=False: scheduled.append(path)
+    )
     watcher.watch([SimpleNamespace(path=root)])
     assert len(scheduled) == 1
     watcher.start()
