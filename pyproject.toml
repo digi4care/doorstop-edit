@@ -91,6 +91,14 @@ check_untyped_defs = true
 module = "doorstop_edit.ui_gen.*"  # Generated directory.
 follow_imports = 'silent'
 
+# The win32 type-check invocation excludes this POSIX-only module as a root,
+# but validation_service imports it for POSIX runs. Keep full checking on the
+# Linux invocation, while treating that transitive import as unavailable on
+# the win32 target.
+[[tool.mypy.overrides]]
+module = "doorstop_edit.validation_posix_supervisor"
+follow_imports = 'skip'
+
 [project.scripts]
 doorstop-edit = 'doorstop_edit.main:main'
 doorstop-edit-qml = 'doorstop_edit.qml_main:main'
