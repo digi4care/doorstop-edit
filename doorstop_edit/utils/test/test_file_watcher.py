@@ -240,9 +240,13 @@ def test_watch_schedules_once_before_start_and_while_running(tmp_path: Path, mon
     root = tmp_path / "root"
     root.mkdir()
     scheduled: list[str] = []
-    monkeypatch.setattr(
-        BaseObserver, "schedule", lambda _observer, _handler, path, recursive=False: scheduled.append(path)
-    )
+
+    def record_schedule(
+        _observer: BaseObserver, _handler: object, path: str, recursive: bool = False, **_kwargs: object
+    ) -> None:
+        scheduled.append(path)
+
+    monkeypatch.setattr(BaseObserver, "schedule", record_schedule)
     watcher.watch([SimpleNamespace(path=root)])
     assert len(scheduled) == 1
     watcher.start()

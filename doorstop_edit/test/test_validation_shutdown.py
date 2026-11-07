@@ -73,10 +73,6 @@ else:
 print(f"validation_helper_reaped {process_reaped}", flush=True)
 if not process_reaped:
     raise SystemExit(7)
-result_directory_retained = result_directory.exists()
-print(f"validation_result_directory_retained {result_directory_retained}", flush=True)
-if not result_directory_retained:
-    raise SystemExit(8)
 print("shutdown_returned", flush=True)
 """
 
@@ -175,7 +171,6 @@ def test_quit_returns_with_genuinely_blocked_custom_validator(tmp_path: Path) ->
     assert "validator_still_running True" in output, output
     assert "validation_helper_reaped True" in output, output
     assert "validation_result_directory_ready True" in output, output
-    assert "validation_result_directory_retained True" in output, output
     assert "shutdown_returned" in output, output
     assert elapsed < 8, f"bounded shutdown took {elapsed:.2f}s"
 
@@ -198,6 +193,8 @@ helper_pid, child_pid = map(int, sentinel.read_text().split())
 run = service._active
 if run is None: raise SystemExit('validation run missing')
 temp = run.temp_dir
+temp_retained_while_running = temp.exists()
+if not temp_retained_while_running: raise SystemExit('result directory missing while helper is running')
 if len(sys.argv) > 3 and sys.argv[3] == 'direct':
     import doorstop_edit.validation_service as module
     module.os.killpg = lambda pgid, sig: os.kill(pgid, sig)
@@ -237,9 +234,13 @@ if len(sys.argv) > 3 and sys.argv[3] == 'direct':
         try: os.kill(pid, 9)
         except ProcessLookupError: pass
     raise SystemExit(0)
-while time.monotonic() < limit and (not gone(helper_pid) or not gone(child_pid) or temp.exists()): time.sleep(.02)
-print(f'helper_gone {gone(helper_pid)} child_gone {gone(child_pid)} temp_retained {temp.exists()}', flush=True)
-raise SystemExit(0 if gone(helper_pid) and gone(child_pid) and temp.exists() else 1)
+while time.monotonic() < limit and (not gone(helper_pid) or not gone(child_pid)): time.sleep(.02)
+print(
+    f'helper_gone {gone(helper_pid)} child_gone {gone(child_pid)} '
+    f'temp_retained_while_running {temp_retained_while_running}',
+    flush=True,
+)
+raise SystemExit(0 if gone(helper_pid) and gone(child_pid) and temp_retained_while_running else 1)
 """
 
 
@@ -268,7 +269,7 @@ def test_shutdown_kills_custom_validator_descendant(tmp_path: Path) -> None:
             env=env,
             timeout=12,
         )
-        assert "helper_gone True child_gone True temp_retained True" in output, output
+        assert "helper_gone True child_gone True temp_retained_while_running True" in output, output
     finally:
         if sentinel.exists():
             try:
