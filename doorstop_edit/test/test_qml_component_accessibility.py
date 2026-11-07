@@ -96,7 +96,7 @@ def test_graph_names_and_result_keyboard_navigation(
         },
     )
     graph.setProperty("active", True)
-    graph.rebuild()
+    getattr(graph, "rebuild")()
     qtbot.waitUntil(lambda: len(visible_items(window, "graphResultRow")) == 2)
 
     search = named(window, "graphSearchField")

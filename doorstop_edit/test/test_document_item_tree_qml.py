@@ -138,7 +138,7 @@ def test_status_separation_and_selection_intents(tree: Any, qtbot: QtBot) -> Non
     root.documentSelectionRequested.connect(lambda prefix: docs.append(prefix))
     root.itemSelectionRequested.connect(lambda uid, prefix: items.append((uid, prefix)))
     root.refreshRequested.connect(lambda: refreshes.append(True))
-    control(root, "treeRefresh").clicked.emit()
+    cast(Any, control(root, "treeRefresh")).clicked.emit()
     assert refreshes == [True]
     assert len(rows(root)) == 7  # refresh intent does not reload or mutate the snapshot
     listing = control(root, "treeRows")

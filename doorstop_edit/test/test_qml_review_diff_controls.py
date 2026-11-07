@@ -91,10 +91,10 @@ def click(view: QQuickView, button: QObject, qtbot: QtBot) -> None:
 def test_review_and_clear_are_host_intents(controls: tuple[QQuickView, QQuickItem], qtbot: QtBot) -> None:
     view, root = controls
     events: list[str] = []
-    root.reviewRequested.connect(lambda: events.append("review"))
-    root.unreviewRequested.connect(lambda: events.append("unreview"))
-    root.clearSuspectsRequested.connect(lambda: events.append("clear"))
-    root.diffRequested.connect(lambda: events.append("diff"))
+    root.__getattribute__("reviewRequested").connect(lambda: events.append("review"))
+    root.__getattribute__("unreviewRequested").connect(lambda: events.append("unreview"))
+    root.__getattribute__("clearSuspectsRequested").connect(lambda: events.append("clear"))
+    root.__getattribute__("diffRequested").connect(lambda: events.append("diff"))
     review = child(root, "reviewAction")
     unreview = child(root, "unreviewAction")
     clear = child(root, "clearSuspectsAction")
@@ -131,8 +131,8 @@ def test_diff_is_supplied_and_history_is_bounded(controls: tuple[QQuickView, QQu
     view, root = controls
     modes: list[str] = []
     revisions: list[int] = []
-    root.diffModeRequested.connect(modes.append)
-    root.diffRevisionRequested.connect(revisions.append)
+    root.__getattribute__("diffModeRequested").connect(modes.append)
+    root.__getattribute__("diffRevisionRequested").connect(revisions.append)
     root.setProperty("hasItem", True)
     root.setProperty("canDiff", True)
     root.setProperty("diffVisible", True)

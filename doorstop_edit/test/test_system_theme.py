@@ -1,4 +1,7 @@
+from typing import cast
+
 from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtGui import QStyleHints
 
 from doorstop_edit.preference_theme import DARK_PROFILE, OsColorScheme, ThemeMode, resolve_theme
 from doorstop_edit.system_theme import SystemThemeMonitor, map_qt_color_scheme
@@ -16,14 +19,18 @@ class FakeStyleHints(QObject):
         self.colorSchemeChanged.emit(color_scheme)
 
 
-def test_maps_initial_os_scheme_and_follows_changes(qapp) -> None:
-    hints = FakeStyleHints(Qt.ColorScheme.Light)
-    monitor = SystemThemeMonitor(hints)
-    changes = []
-    monitor.colorSchemeChanged.connect(lambda: changes.append(monitor.colorScheme))
+def get_dark_scheme() -> Qt.ColorScheme:
+    return Qt.ColorScheme.Dark
 
-    assert monitor.colorScheme == "Light"
-    hints.set_color_scheme(Qt.ColorScheme.Dark)
+
+def test_maps_initial_os_scheme_and_follows_changes(qapp: object) -> None:
+    hints = FakeStyleHints(Qt.ColorScheme.Light)
+    monitor = SystemThemeMonitor(cast(QStyleHints, hints))
+    changes: list[str] = []
+    monitor.colorSchemeChanged.connect(lambda: changes.append(cast(str, monitor.colorScheme)))
+
+    assert str(monitor.colorScheme) == "Light"
+    hints.set_color_scheme(get_dark_scheme())
     assert changes == ["Dark"]
     assert monitor.colorScheme == "Dark"
 

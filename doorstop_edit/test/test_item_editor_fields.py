@@ -49,6 +49,11 @@ ApplicationWindow {
     qapp.processEvents()
 
 
+def assert_last_edit(edits: list[tuple[str, object]], expected: tuple[str, object]) -> None:
+    if not edits or edits[-1] != expected:
+        raise AssertionError(f"expected last edit {expected!r}, got {edits[-1:]!r}")
+
+
 def visual_item(root: QQuickItem, name: str) -> QQuickItem:
     """Repeater delegates are visual children, not QObject children of the form."""
     if root.objectName() == name:
@@ -105,15 +110,15 @@ def test_keyboard_edits_and_host_owned_save_revert_intents(form: tuple[QQuickWin
     edits: list[tuple[str, object]] = []
     saves: list[bool] = []
     reverts: list[bool] = []
-    editor.fieldEdited.connect(lambda key, value: edits.append((key, value)))
-    editor.saveRequested.connect(lambda: saves.append(True))
-    editor.revertRequested.connect(lambda: reverts.append(True))
+    editor.__getattribute__("fieldEdited").connect(lambda key, value: edits.append((key, value)))
+    editor.__getattribute__("saveRequested").connect(lambda: saves.append(True))
+    editor.__getattribute__("revertRequested").connect(lambda: reverts.append(True))
     header = visual_item(editor, "fieldInput_0")
     body = visual_item(editor, "fieldInput_1")
     active = visual_item(editor, "fieldInput_2")
     header.forceActiveFocus()
     qtbot.keyClick(window, Qt.Key.Key_X)
-    assert edits[-1] == ("header", "Ax")
+    assert_last_edit(edits, ("header", "Ax"))
     assert window.property("snapshot")["header"] == "A"  # no mutation
     qtbot.keyClick(window, Qt.Key.Key_Tab)
     assert body.property("activeFocus")
@@ -122,11 +127,11 @@ def test_keyboard_edits_and_host_owned_save_revert_intents(form: tuple[QQuickWin
     body.forceActiveFocus()
     body.setProperty("cursorPosition", len(body.property("text")))
     qtbot.keyClick(window, Qt.Key.Key_Z)
-    assert edits[-1] == ("body", "Bz")
+    assert_last_edit(edits, ("body", "Bz"))
     active.forceActiveFocus()
     qtbot.keyClick(window, Qt.Key.Key_Space)
-    assert edits[-1] == ("active", True)
-    assert window.property("snapshot")["active"] is False
+    assert_last_edit(edits, ("active", True))
+    assert window.property("snapshot") == {"header": "A", "body": "B", "active": False}
 
     editor.setProperty("dirty", True)
     editor.setProperty("canSave", True)
@@ -175,7 +180,7 @@ def test_host_snapshot_errors_and_field_access(
     assert accessible.text(QAccessible.Text.Name) == "Level"
     assert accessible.text(QAccessible.Text.Description) == "Enter a valid level"
     edits: list[tuple[str, object]] = []
-    editor.fieldEdited.connect(lambda key, value: edits.append((key, value)))
+    editor.__getattribute__("fieldEdited").connect(lambda key, value: edits.append((key, value)))
     window.setProperty("snapshot", {"level": "2.3", "description": "Externally changed"})
     qapp.processEvents()
     assert level.property("text") == "2.3"

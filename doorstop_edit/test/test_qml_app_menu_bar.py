@@ -109,6 +109,8 @@ def test_shortcuts_enabled_state_and_accessible_names(menu: QObject) -> None:
         "about": "About Doorstop Edit",
     }
     for name, expected in names.items():
-        interface = QAccessible.queryAccessibleInterface(action(menu, name).parent())
+        parent = action(menu, name).parent()
+        assert parent is not None
+        interface = QAccessible.queryAccessibleInterface(parent)
         assert interface is not None
         assert interface.text(QAccessible.Text.Name) == expected

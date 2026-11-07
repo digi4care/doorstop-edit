@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import pytest
 from PySide6.QtCore import QSettings
 
 from doorstop_edit.preference_theme import (
@@ -16,7 +19,7 @@ from doorstop_edit.preference_theme import (
 )
 
 
-def isolate_real_settings(tmp_path, monkeypatch):
+def isolate_real_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from doorstop_edit import settings as settings_module
 
     QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, str(tmp_path))
@@ -32,7 +35,7 @@ def isolate_real_settings(tmp_path, monkeypatch):
     )
 
 
-def test_defaults_and_auto_resolution():
+def test_defaults_and_auto_resolution() -> None:
     assert ThemePreferences.font_size == 12
     assert ThemePreferences.density_scale == -1
     assert ThemePreferences.mode == ThemeMode.NIGHT.value
@@ -46,7 +49,7 @@ def test_defaults_and_auto_resolution():
     assert resolve_theme(ThemeMode.AUTO, False, DARK_PROFILE).profile is DARK_PROFILE
 
 
-def test_profile_persistence_reload_and_reset(tmp_path, monkeypatch):
+def test_profile_persistence_reload_and_reset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     isolate_real_settings(tmp_path, monkeypatch)
     profile = ThemeProfile("Ocean", ThemeTokens("#001122", "#112233", "#ffffff", "#00aaff"))
     ThemeProfileStore().save(profile)
@@ -57,7 +60,7 @@ def test_profile_persistence_reload_and_reset(tmp_path, monkeypatch):
     assert BUILTIN_PROFILES[DARK_PROFILE.name] == DARK_PROFILE
 
 
-def test_selection_and_legacy_settings_persist_independently(tmp_path, monkeypatch):
+def test_selection_and_legacy_settings_persist_independently(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     isolate_real_settings(tmp_path, monkeypatch)
     prefs = ThemePreferences()
     prefs.mode = ThemeMode.DAY.value

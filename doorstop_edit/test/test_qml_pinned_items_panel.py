@@ -1,7 +1,7 @@
 """Standalone Qt Quick checks for the pinned-items intent surface."""
 
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, cast
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, QUrl
@@ -31,7 +31,7 @@ def pinned_panel(qapp: QApplication, qtbot: QtBot) -> Iterator[tuple[QQuickItem,
     assert rows is not None
     qtbot.waitUntil(window.isActive)
     yield panel, rows, window
-    panel.setParentItem(None)
+    panel.setParentItem(cast(QQuickItem, None))
     panel.deleteLater()
     window.close()
     window.deleteLater()
@@ -46,7 +46,7 @@ def test_keyboard_selection_and_open_intent(
 ) -> None:
     panel, rows, window = pinned_panel
     opened: list[str] = []
-    panel.openRequested.connect(opened.append)
+    panel.__getattribute__("openRequested").connect(opened.append)
     panel.setProperty(
         "pinnedItems",
         [
@@ -69,7 +69,7 @@ def test_unpin_is_host_intent_not_local_removal(
 ) -> None:
     panel, rows, window = pinned_panel
     removed: list[str] = []
-    panel.unpinRequested.connect(removed.append)
+    panel.__getattribute__("unpinRequested").connect(removed.append)
     panel.setProperty("pinnedItems", [{"uid": "REQ-001", "header": "First"}])
     qtbot.waitUntil(lambda: rows.property("count") == 1)
     rows.forceActiveFocus()
@@ -78,7 +78,8 @@ def test_unpin_is_host_intent_not_local_removal(
     assert rows.property("count") == 1  # Host owns the data and must refresh it.
     button = panel.findChild(QObject, "pinnedUnpinButton")
     assert button is not None
-    button.clicked.emit()
+    assert isinstance(button, QQuickItem)
+    getattr(button, "clicked").emit()
     assert removed == ["REQ-001", "REQ-001"]
 
 
@@ -88,8 +89,8 @@ def test_empty_and_malformed_rows_do_not_activate(
     panel, rows, window = pinned_panel
     opened: list[str] = []
     removed: list[str] = []
-    panel.openRequested.connect(opened.append)
-    panel.unpinRequested.connect(removed.append)
+    panel.__getattribute__("openRequested").connect(opened.append)
+    panel.__getattribute__("unpinRequested").connect(removed.append)
     panel.setProperty("pinnedItems", [None, {}, {"uid": ""}])
     qtbot.waitUntil(lambda: rows.property("count") == 0)
     rows.forceActiveFocus()
@@ -97,7 +98,9 @@ def test_empty_and_malformed_rows_do_not_activate(
     QTest.keyClick(window, Qt.Key.Key_Delete)
     assert panel.property("selectedUid") == ""
     assert not opened and not removed
-    assert not panel.findChild(QObject, "pinnedOpenButton").property("enabled")
+    open_button = panel.findChild(QObject, "pinnedOpenButton")
+    assert open_button is not None
+    assert not open_button.property("enabled")
     panel.setProperty("pinnedItems", None)
     assert rows.property("count") == 0
 
@@ -108,8 +111,8 @@ def test_refresh_preserves_uid_then_drops_removed_selection(
     panel, rows, window = pinned_panel
     opened: list[str] = []
     removed: list[str] = []
-    panel.openRequested.connect(opened.append)
-    panel.unpinRequested.connect(removed.append)
+    panel.__getattribute__("openRequested").connect(opened.append)
+    panel.__getattribute__("unpinRequested").connect(removed.append)
     panel.setProperty("pinnedItems", [{"uid": "A"}, {"uid": "B"}, {"uid": "C"}])
     qtbot.waitUntil(lambda: rows.property("count") == 3)
     rows.forceActiveFocus()

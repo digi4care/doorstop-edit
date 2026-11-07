@@ -1,10 +1,10 @@
 """Isolated QML fixture for the unintegrated workspace panel component."""
 
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator, cast
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt, QUrl
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPoint, QPointF, Qt, QUrl
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickItem, QQuickWindow
 from PySide6.QtTest import QSignalSpy, QTest
@@ -13,7 +13,7 @@ from pytestqt.qtbot import QtBot
 
 
 @pytest.fixture
-def workspace(qapp: QApplication, qtbot: QtBot) -> Iterator[tuple[QQuickWindow, object]]:
+def workspace(qapp: QApplication, qtbot: QtBot) -> Iterator[tuple[QQuickWindow, Any]]:
     engine = QQmlEngine()
     component = QQmlComponent(engine)
     component.setData(
@@ -39,8 +39,8 @@ ApplicationWindow {
     assert component.isReady(), component.errors()
     window = component.create()
     assert isinstance(window, QQuickWindow), component.errors()
-    qtbot.waitUntil(lambda: window.findChild(object, "draftFixture") is not None)
-    panels = window.findChild(object, "workspacePanels")
+    qtbot.waitUntil(lambda: cast(Any, window.findChild(QObject, "draftFixture")) is not None)
+    panels = cast(Any, window.findChild(QObject, "workspacePanels"))
     assert panels is not None
     yield window, panels
     window.close()
@@ -50,27 +50,27 @@ ApplicationWindow {
     qapp.processEvents()
 
 
-def test_loaded_contents_survive_visibility_changes(workspace: tuple[QQuickWindow, object]) -> None:
+def test_loaded_contents_survive_visibility_changes(workspace: tuple[QQuickWindow, Any]) -> None:
     window, panels = workspace
-    draft = window.findChild(object, "draftFixture")
+    draft = cast(Any, window.findChild(QObject, "draftFixture"))
     assert draft.property("text") == "unsaved draft"
     assert panels.property("currentPanel") == "editor"
     assert not panels.property("pinnedVisible")
 
     panels.setPanelVisible("editor", False)
     assert panels.property("currentPanel") == "items"
-    assert window.findChild(object, "draftFixture") is draft
+    assert cast(Any, window.findChild(QObject, "draftFixture")) is draft
     panels.setPanelVisible("pinned", True)
     assert panels.property("currentPanel") == "pinned"
-    assert window.findChild(object, "pinnedFixture") is not None
+    assert cast(Any, window.findChild(QObject, "pinnedFixture")) is not None
     panels.setPanelVisible("editor", True)
     assert draft.property("text") == "unsaved draft"
     assert panels.property("currentPanel") == "editor"
 
 
-def test_split_sizes_and_orientation_contract(workspace: tuple[QQuickWindow, object], qtbot: QtBot) -> None:
+def test_split_sizes_and_orientation_contract(workspace: tuple[QQuickWindow, Any], qtbot: QtBot) -> None:
     window, panels = workspace
-    documents = window.findChild(object, "documentsPane")
+    documents = cast(Any, window.findChild(QObject, "documentsPane"))
     assert panels.property("horizontal")
     assert documents.property("width") >= 180
     spy = QSignalSpy(panels.splitterSizesCommitted)
@@ -91,9 +91,9 @@ def test_split_sizes_and_orientation_contract(workspace: tuple[QQuickWindow, obj
     assert spy.count() == 2
 
 
-def test_toolbar_controls_toggle_hidden_panel(workspace: tuple[QQuickWindow, object], qtbot: QtBot) -> None:
+def test_toolbar_controls_toggle_hidden_panel(workspace: tuple[QQuickWindow, Any], qtbot: QtBot) -> None:
     window, panels = workspace
-    button = window.findChild(object, "pinnedToggle")
+    button = cast(Any, window.findChild(QObject, "pinnedToggle"))
     assert button is not None
     assert not panels.property("pinnedVisible")
     center = button.mapToScene(QPointF(button.property("width") / 2, button.property("height") / 2))
@@ -107,10 +107,10 @@ def test_toolbar_controls_toggle_hidden_panel(workspace: tuple[QQuickWindow, obj
     assert panels.property("currentPanel") == "pinned"
 
 
-def test_dragging_splitter_commits_size(workspace: tuple[QQuickWindow, object], qtbot: QtBot) -> None:
+def test_dragging_splitter_commits_size(workspace: tuple[QQuickWindow, Any], qtbot: QtBot) -> None:
     window, panels = workspace
-    split = window.findChild(QQuickItem, "workspaceSplitView")
-    documents = window.findChild(QQuickItem, "documentsPane")
+    split = cast(QQuickItem, window.findChild(QQuickItem, "workspaceSplitView"))
+    documents = cast(QQuickItem, window.findChild(QQuickItem, "documentsPane"))
     handle = next(
         child for child in split.childItems() if child.isVisible() and child.width() == 9 and child.height() > 100
     )
@@ -129,7 +129,7 @@ def test_dragging_splitter_commits_size(workspace: tuple[QQuickWindow, object], 
     qtbot.waitUntil(lambda: documents.width() == pytest.approx(260))
 
 
-def test_panel_state_round_trip(workspace: tuple[QQuickWindow, object]) -> None:
+def test_panel_state_round_trip(workspace: tuple[QQuickWindow, Any]) -> None:
     _, panels = workspace
     state = panels.capturePanelState().toVariant()
     assert type(state) is dict
@@ -159,7 +159,7 @@ def test_panel_state_round_trip(workspace: tuple[QQuickWindow, object]) -> None:
 
 
 def test_panel_state_rejects_invalid_input_without_mutation(
-    workspace: tuple[QQuickWindow, object],
+    workspace: tuple[QQuickWindow, Any],
 ) -> None:
     _, panels = workspace
     original = panels.capturePanelState().toVariant()
@@ -170,7 +170,7 @@ def test_panel_state_rejects_invalid_input_without_mutation(
     assert panels.capturePanelState().toVariant() == original
 
 
-def test_panel_state_clamps_minimum_sizes(workspace: tuple[QQuickWindow, object]) -> None:
+def test_panel_state_clamps_minimum_sizes(workspace: tuple[QQuickWindow, Any]) -> None:
     _, panels = workspace
     state = panels.capturePanelState().toVariant()
     for key in (

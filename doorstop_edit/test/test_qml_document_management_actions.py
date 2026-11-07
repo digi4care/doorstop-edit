@@ -1,15 +1,17 @@
 """Standalone QML document actions: host-owned state and intent-only UI."""
 
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QObject, QUrl
 from PySide6.QtQml import QQmlComponent, QQmlEngine
+from PySide6.QtQuick import QQuickItem
 from pytestqt.qtbot import QtBot
 
 
 @pytest.fixture
-def actions(qtbot: QtBot) -> QObject:
+def actions(qtbot: QtBot) -> Generator[QObject, None, None]:
     engine = QQmlEngine()
     qml_file = Path(__file__).resolve().parents[1] / "qml" / "DocumentManagementActions.qml"
     component = QQmlComponent(engine, QUrl.fromLocalFile(str(qml_file)))
@@ -22,8 +24,8 @@ def actions(qtbot: QtBot) -> QObject:
     engine.deleteLater()
 
 
-def button(actions: QObject, name: str) -> QObject:
-    found = actions.findChild(QObject, name)
+def button(actions: QObject, name: str) -> QQuickItem:
+    found = actions.findChild(QQuickItem, name)
     assert found is not None
     assert found.property("activeFocusOnTab") is True
     assert found.property("text")
@@ -66,14 +68,14 @@ def test_host_receives_only_intents_and_deletion_is_guarded(actions: QObject) ->
         getattr(actions, signal).connect(lambda prefix, signal=signal: seen.append((signal, prefix)))
 
     actions.setProperty("projectAvailable", True)
-    button(actions, "addDocumentAction").clicked.emit()
+    getattr(button(actions, "addDocumentAction"), "clicked").emit()
     assert seen == [("addDocumentRequested", "")]
 
     actions.setProperty("selectedPrefix", "REQ")
     actions.setProperty("parentPrefix", "ROOT")
     actions.setProperty("reorderAvailable", True)
     for name in signals:
-        button(actions, name).clicked.emit()
+        getattr(button(actions, name), "clicked").emit()
     assert seen[1:] == [
         ("addDocumentRequested", "REQ"),
         ("removeDocumentRequested", "REQ"),
@@ -83,9 +85,9 @@ def test_host_receives_only_intents_and_deletion_is_guarded(actions: QObject) ->
     ]
 
     actions.setProperty("childPrefixes", ["SUB"])
-    button(actions, "removeDocumentAction").clicked.emit()
+    getattr(button(actions, "removeDocumentAction"), "clicked").emit()
     assert len(seen) == 6
     actions.setProperty("projectAvailable", False)
     for name in signals:
-        button(actions, name).clicked.emit()
+        getattr(button(actions, name), "clicked").emit()
     assert len(seen) == 6

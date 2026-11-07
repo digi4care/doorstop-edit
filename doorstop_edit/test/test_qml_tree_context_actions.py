@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QMetaObject, QObject, Qt, QUrl
@@ -29,6 +30,7 @@ Window {
     )
     assert engine.rootObjects()
     window = engine.rootObjects()[0]
+    assert isinstance(window, QWindow)
     menu = window.findChild(QObject, "treeActions")
     assert menu is not None
     yield window, menu
@@ -70,7 +72,7 @@ def test_background_and_item_intents_are_targeted(menu_window: tuple[QWindow, QO
         "expandAllRequested",
         "collapseAllRequested",
     ):
-        getattr(menu, signal_name).connect(lambda *args, name=signal_name: events.append((name, args)))
+        getattr(cast(Any, menu), signal_name).connect(lambda *args, name=signal_name: events.append((name, args)))
 
     menu.setProperty("projectAvailable", True)
     menu.setProperty("previewAvailable", True)
@@ -129,7 +131,7 @@ def test_invalid_and_missing_item_targets_do_not_offer_mutations(
 def test_document_only_offers_existing_preview_intent(menu_window: tuple[QWindow, QObject], qapp: QApplication) -> None:
     _, menu = menu_window
     requested: list[str] = []
-    menu.popupDocumentRequested.connect(requested.append)
+    cast(Any, menu).popupDocumentRequested.connect(requested.append)
     menu.setProperty("contextType", "document")
     menu.setProperty("documentPrefix", "REQ")
     menu.setProperty("projectAvailable", True)
@@ -151,7 +153,7 @@ def test_document_only_offers_existing_preview_intent(menu_window: tuple[QWindow
 def test_menu_supports_keyboard_activation_and_escape(menu_window: tuple[QWindow, QObject], qapp: QApplication) -> None:
     window, menu = menu_window
     requested: list[str] = []
-    menu.createItemRequested.connect(requested.append)
+    cast(Any, menu).createItemRequested.connect(requested.append)
     menu.setProperty("contextType", "item")
     menu.setProperty("itemUid", "REQ-002")
     menu.setProperty("projectAvailable", True)

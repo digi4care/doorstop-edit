@@ -1,7 +1,9 @@
 """Observable adapter for the operating-system color-scheme preference."""
 
+from typing import cast
+
 from PySide6.QtCore import Property, QObject, Qt, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QStyleHints
 
 from doorstop_edit.preference_theme import OsColorScheme
 
@@ -24,19 +26,19 @@ class SystemThemeMonitor(QObject):
 
     colorSchemeChanged = Signal()
 
-    def __init__(self, style_hints: object | None = None, parent: QObject | None = None) -> None:
+    def __init__(self, style_hints: QStyleHints | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
         if style_hints is None:
             application = QGuiApplication.instance()
             if application is None:
                 raise RuntimeError("SystemThemeMonitor requires a QGuiApplication")
-            style_hints = application.styleHints()
+            style_hints = cast(QGuiApplication, application).styleHints()
         self._style_hints = style_hints
         self._style_hints.colorSchemeChanged.connect(self._on_color_scheme_changed)
 
     @Property(str, notify=colorSchemeChanged)
     def colorScheme(self) -> str:
-        return map_qt_color_scheme(self._style_hints.colorScheme).value
+        return map_qt_color_scheme(cast(Qt.ColorScheme, self._style_hints.colorScheme)).value
 
     def _on_color_scheme_changed(self, *_args: object) -> None:
         self.colorSchemeChanged.emit()
