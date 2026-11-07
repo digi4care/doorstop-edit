@@ -137,6 +137,34 @@ def test_status_report_lists_gaps_and_unknown_without_failure(tmp_path: Path) ->
     assert "Unknown nodes/edges:" in output
 
 
+def test_status_report_lists_not_assessed_and_missing_coverage_as_gaps(tmp_path: Path) -> None:
+    graph = build(tmp_path, "2026-01-01T00:00:00+00:00")
+    base = {
+        "type": "Requirement",
+        "properties": {},
+        "provenance": {
+            "sourceKind": "doorstop",
+            "sourceLocator": "REQ-003",
+            "observedAt": graph["generatedAt"],
+            "method": "automated",
+            "repositoryRevision": "unknown",
+        },
+        "freshness": "unknown",
+        "verificationStatus": "unverified",
+    }
+    graph["nodes"].extend(
+        [
+            {**base, "id": "req:REQ-003", "coverageStatus": "notAssessed"},
+            {**base, "id": "req:REQ-004"},
+        ]
+    )
+
+    output = status_report(graph, tmp_path)
+
+    assert "  req:REQ-003: notAssessed" in output
+    assert "  req:REQ-004: not assessed" in output
+
+
 def test_validator_rejects_unhashable_fields_and_edge_provenance() -> None:
     graph = {
         "schemaId": "doorstop-edit-migration-traceability/1",

@@ -73,9 +73,19 @@ def run_ruff_format(files: List[Path], fix: bool) -> None:
 
 @check("mypy")
 def run_mypy(files: List[Path], _: bool) -> None:
-    args = ["mypy", "--color-output"]
-    args += [str(p) for p in files]
-    subprocess.check_output(args, stderr=subprocess.PIPE)
+    posix_only = {
+        Path("doorstop_edit/validation_posix_supervisor.py"),
+        Path("doorstop_edit/test/test_validation_posix_supervisor.py"),
+        Path("doorstop_edit/test/test_validation_shutdown.py"),
+        Path("tools/benchmark_app_knowledge_graph.py"),
+    }
+    for platform, platform_files in (
+        ("linux", files),
+        ("win32", [path for path in files if path not in posix_only]),
+    ):
+        args = ["mypy", "--color-output", "--platform", platform]
+        args += [str(p) for p in platform_files]
+        subprocess.check_output(args, stderr=subprocess.PIPE)
 
 
 def get_git_files() -> List[Path]:

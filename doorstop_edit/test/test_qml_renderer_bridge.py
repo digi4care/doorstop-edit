@@ -66,13 +66,21 @@ ApplicationWindow {
         assert preview is not None
         qtbot.waitUntil(lambda: renderer._render_started, timeout=15000)
         qtbot.waitUntil(lambda: bool(renderer._channel_ready), timeout=15000)
-        for _ in range(30):
+        qtbot.waitUntil(lambda: renderer.progress == 100 or bool(renderer.errorMessage), timeout=30000)
+        assert not renderer.errorMessage, f"Markdown rendering failed: {renderer.errorMessage}"
+
+        for _ in range(200):
             getattr(window, "capture")()
-            if "REQ-A-001" in str(window.property("observedHtml")):
+            observed_html = str(window.property("observedHtml"))
+            if "REQ-A-001" in observed_html and "req-table" in observed_html:
                 break
             qtbot.wait(100)
-        assert "REQ-A-001" in str(window.property("observedHtml"))
-        assert "req-table" in str(window.property("observedHtml"))
+        else:
+            pytest.fail(
+                "rendered item HTML did not reach WebEngine; "
+                f"loaded={renderer._loaded}, channel_ready={renderer._channel_ready}, "
+                f"progress={renderer.progress}, error={renderer.errorMessage!r}"
+            )
 
         requested: list[tuple[str, str]] = []
         popups: list[tuple[QObject, str]] = []

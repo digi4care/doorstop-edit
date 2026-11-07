@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import selectors
 import signal
@@ -59,6 +60,43 @@ def _main() -> int:
         return _supervise(argv, status_fd, gui_fd)
     except (ValueError, IndexError):
         return 2
+
+
+def _group_has_no_live_members(group_id: int, timeout: float = 0.5) -> bool:
+    """Use bounded ps output to confirm a group contains only zombies or no members."""
+    states: list[str] = []
+    reason = "unknown inspection failure"
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pgid=,stat="],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=max(0.01, timeout),
+        )
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) != 2:
+                reason = "malformed ps output"
+                raise ValueError(reason)
+            pgid = int(fields[0])
+            if pgid == group_id:
+                states.append(fields[1])
+                if not fields[1].startswith("Z"):
+                    reason = "live or non-zombie member"
+                    raise ValueError(reason)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        reason = "ps command failed or timed out"
+    except ValueError:
+        pass
+    logging.getLogger(__name__).warning(
+        "PGID %s cleanup inspection unconfirmed; states=%s; reason=%s",
+        group_id,
+        states,
+        reason,
+    )
+    return False
 
 
 @dataclass(frozen=True)
@@ -164,6 +202,10 @@ class PosixValidationOwner:
             os.killpg(self.group_id, signal.SIGKILL)
         except ProcessLookupError:
             self._kill_requested = True
+        except PermissionError:
+            if not _group_has_no_live_members(self.group_id):
+                raise
+            self._kill_requested = True
         else:
             self._kill_requested = True
 
@@ -203,7 +245,7 @@ class PosixValidationOwner:
         return PosixCleanupResult(supervisor_reaped=True)
 
     def confirm_group_absent(self, timeout: float = 1.0) -> bool:
-        """Confirm group absence only by post-reap signal-zero ESRCH probes."""
+        """Confirm no live group members by post-reap signal-zero or bounded state probes."""
         if not self.supervisor_reaped or not self._kill_requested:
             return False
         import time
@@ -214,6 +256,10 @@ class PosixValidationOwner:
                 os.killpg(self.group_id, 0)
             except ProcessLookupError:
                 return True
+            except PermissionError:
+                if _group_has_no_live_members(self.group_id, max(0.01, deadline - time.monotonic())):
+                    return True
+                return False
             except OSError:
                 return False
             if time.monotonic() >= deadline:

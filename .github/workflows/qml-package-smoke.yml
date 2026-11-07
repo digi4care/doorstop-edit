@@ -1,0 +1,77 @@
+name: QML installed-wheel smoke
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+jobs:
+  qml-wheel-smoke:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [Ubuntu, macOS, Windows]
+        python-version: ['3.11', '3.12', '3.13', '3.14']
+        include:
+          - os: Ubuntu
+            image: ubuntu-22.04
+          - os: macOS
+            image: macos-15
+          - os: Windows
+            image: windows-2022
+    env:
+      QT_QPA_PLATFORM: offscreen
+      QT_DEBUG_PLUGINS: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Ubuntu Qt runtime dependencies
+        if: ${{ matrix.os == 'Ubuntu' }}
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libglib2.0-0 libgles2-mesa-dev libdbus-1-3 libxkbcommon-x11-0 libxkbfile1 libnss3 libxcomposite1 libxdamage1 libxrender1 libxrandr2 libxtst6 libxi6 libasound2 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0 libxcb-cursor0
+          version: 1.0
+
+      - name: Set up uv and Python ${{ matrix.python-version }}
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Check lock file
+        run: uv lock --check
+
+      - name: Install build dependencies
+        run: uv sync --frozen --no-install-project
+
+      - name: Build resources
+        run: uv run --no-sync python build.py
+
+      - name: Build distribution artifacts
+        run: uv build
+
+      - name: Smoke test installed wheel
+        run: |
+          wheel=$(find dist -maxdepth 1 -name '*.whl' -print -quit)
+          test -n "$wheel"
+          smoke_dir=$(mktemp -d)
+          uv venv --python "$(python -c 'import sys; print(sys.executable)')" "$smoke_dir/venv"
+          uv pip install --python "$smoke_dir/venv" 'setuptools>=80,<81'
+          uv pip install --python "$smoke_dir/venv" "$wheel"
+          (
+            cd "$smoke_dir"
+            uv run --python "$smoke_dir/venv" python -c 'import doorstop_edit; assert "site-packages" in doorstop_edit.__file__; assert doorstop_edit.__version__ != "(local)"'
+            uv run --python "$smoke_dir/venv" python "$GITHUB_WORKSPACE/doorstop_edit/test/test_qml_package_smoke.py"
+          )

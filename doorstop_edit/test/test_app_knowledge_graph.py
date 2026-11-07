@@ -127,6 +127,27 @@ def test_load_errors_have_no_stale_fields() -> None:
     }
 
 
+def test_missing_item_property_emits_error_state_item() -> None:
+    class MissingHeaderItem(Item):
+        @property
+        def header(self) -> str:
+            raise AttributeError("header unavailable")
+
+        @header.setter
+        def header(self, value: str) -> None:
+            pass
+
+    snapshot = graph([MissingHeaderItem("REQ-1")])
+    item = next(node for node in snapshot.nodes if node.id == "item:REQ-1")
+    assert dict(item.data) == {
+        "documentId": "document:REQ",
+        "error": "header unavailable",
+        "loadState": "error",
+        "reviewed": "unknown",
+        "uid": "REQ-1",
+    }
+
+
 def test_validation_current_stale_and_project_association() -> None:
     findings = [ValidationFinding("error", "broken", "REQ-1"), ValidationFinding("warning", "whole project")]
     current = graph(

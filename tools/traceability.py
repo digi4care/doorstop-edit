@@ -405,11 +405,11 @@ def status_report(graph: dict[str, Any], root: Path = ROOT) -> list[str]:
     nodes = graph.get("nodes", [])
     edges = graph.get("edges", [])
     gaps = sorted(
-        f"{node.get('id')}: {node.get('coverageStatus')}"
+        f"{node.get('id')}: {node.get('coverageStatus', 'not assessed')}"
         for node in nodes
         if isinstance(node, dict)
         and node.get("type") in ("Requirement", "Capability")
-        and node.get("coverageStatus") in ("uncovered", "untestable")
+        and node.get("coverageStatus", "not assessed") in ("uncovered", "untestable", "notAssessed", "not assessed")
     )
     current_rev = rev(root)
     snapshot = graph.get("repository", {}).get("revision") if isinstance(graph.get("repository"), dict) else None

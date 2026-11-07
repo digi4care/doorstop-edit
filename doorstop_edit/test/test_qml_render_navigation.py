@@ -82,6 +82,17 @@ def js(qtbot: QtBot, window: QQuickWindow, script: str, *, popup: bool = False) 
     return window.property("result")
 
 
+def wait_for_item_link(qtbot: QtBot, window: QQuickWindow) -> None:
+    for _ in range(200):
+        window.setProperty("result", "__pending__")
+        getattr(window, "execute")("!!document.querySelector('#REQ-A-001 a[onclick]')")
+        qtbot.waitUntil(lambda: window.property("result") != "__pending__", timeout=3000)
+        if window.property("result"):
+            return
+        qtbot.wait(100)
+    pytest.fail("rendered internal link never became available in WebEngine")
+
+
 def test_clicked_links_and_popup_routing(
     host: tuple[QmlBackend, QmlRenderBridge, QQuickWindow], qtbot: QtBot, monkeypatch: MonkeyPatch
 ) -> None:
@@ -102,6 +113,7 @@ def test_clicked_links_and_popup_routing(
     renderer.itemRequested.connect(lambda uid, prefix: requested.append((uid, prefix)))
     renderer.popupCreated.connect(record_popup)
     original = js(qtbot, window, "location.href")
+    wait_for_item_link(qtbot, window)
     js(qtbot, window, "document.querySelector('#REQ-A-001 a[onclick]').click(); true")
     qtbot.waitUntil(lambda: len(requested) == 1, timeout=10000)
     assert requested[0][0].startswith("REQ-B-")
