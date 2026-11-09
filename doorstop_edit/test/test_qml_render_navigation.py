@@ -82,10 +82,10 @@ def js(qtbot: QtBot, window: QQuickWindow, script: str, *, popup: bool = False) 
     return window.property("result")
 
 
-def wait_for_item_link(qtbot: QtBot, window: QQuickWindow) -> None:
+def wait_for_item_link(qtbot: QtBot, window: QQuickWindow, *, popup: bool = False) -> None:
     for _ in range(200):
         window.setProperty("result", "__pending__")
-        getattr(window, "execute")("!!document.querySelector('#REQ-A-001 a[onclick]')")
+        getattr(window, "executePopup" if popup else "execute")("!!document.querySelector('#REQ-A-001 a[onclick]')")
         qtbot.waitUntil(lambda: window.property("result") != "__pending__", timeout=3000)
         if window.property("result"):
             return
@@ -131,6 +131,7 @@ def test_clicked_links_and_popup_routing(
     nested: list[tuple[QmlRenderBridge, str]] = []
     popup.popupCreated.connect(lambda child, title: nested.append((child, title)))
     popup_original = js(qtbot, window, "location.href", popup=True)
+    wait_for_item_link(qtbot, window, popup=True)
     js(qtbot, window, "document.querySelector('#REQ-A-001 a[onclick]').click(); true", popup=True)
     qtbot.waitUntil(lambda: len(nested) == 1, timeout=10000)
     assert nested[0][0]._pinned_uid.startswith("REQ-B-")

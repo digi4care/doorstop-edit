@@ -18,6 +18,8 @@ from doorstop_edit.utils.item_utils import match_level
 
 logger = logging.getLogger("gui")
 
+QML_BRIDGE_READY_MARKER = "/* QML_RENDER_BRIDGE_READY */"
+
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -66,6 +68,7 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
     py.html_select_item.connect(function(id) {{
         select_item(id);
     }});
+    /* QML_RENDER_BRIDGE_READY */
 }});
 
 function open_item(e, uid) {{

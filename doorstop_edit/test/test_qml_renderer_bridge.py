@@ -28,6 +28,10 @@ def test_worker_html_reaches_qml_webengine_and_webchannel_callback(
     backend.selectDocument("REQ-A")
     backend.selectItem("REQ-A-001")
     renderer = QmlRenderBridge(backend)
+    page_html = str(renderer.pageHtml)
+    ready_index = page_html.index("py.bridgeReady(")
+    assert page_html.index("py.html_update_item.connect") < ready_index
+    assert page_html.index("py.html_select_item.connect") < ready_index
     engine = QQmlApplicationEngine()
     qml_warnings: list[str] = []
     engine.warnings.connect(lambda warnings: qml_warnings.extend(w.toString() for w in warnings))

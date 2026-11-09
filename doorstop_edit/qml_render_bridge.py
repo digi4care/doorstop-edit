@@ -8,7 +8,7 @@ from typing import cast
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
-from doorstop_edit.item_render.item_render_view import HTML_TEMPLATE
+from doorstop_edit.item_render.item_render_view import HTML_TEMPLATE, QML_BRIDGE_READY_MARKER
 from doorstop_edit.item_render.markdown_css import MARKDOWN_CSS
 from doorstop_edit.item_render.render_worker import RenderWorker
 from doorstop_edit.qml_backend import QmlBackend
@@ -163,9 +163,13 @@ class QmlRenderBridge(QObject):
         self._base_url = QUrl.fromLocalFile(str(base_path) + "/")
         # A page-specific handshake prevents a late callback from a replaced page
         # from starting work against the new selection.
-        self._page_html = HTML_TEMPLATE.format(body=body, style=MARKDOWN_CSS).replace(
-            "window.py = channel.objects.py;",
-            f"window.py = channel.objects.py;\n    py.bridgeReady({self._page_generation});",
+        page_html = HTML_TEMPLATE.format(body=body, style=MARKDOWN_CSS)
+        if page_html.count(QML_BRIDGE_READY_MARKER) != 1:
+            raise RuntimeError("QML WebChannel readiness marker must appear exactly once")
+        self._page_html = page_html.replace(
+            QML_BRIDGE_READY_MARKER,
+            f"py.bridgeReady({self._page_generation});",
+            1,
         )
         self.pageChanged.emit()
 
