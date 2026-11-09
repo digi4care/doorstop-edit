@@ -66,11 +66,15 @@ def graph(items: list[Item], **kwargs: Any) -> GraphSnapshot:
     return build_app_knowledge_graph(Data({"REQ": doc}), **kwargs)
 
 
+def project_id() -> str:
+    return f"project:{Path('/project').resolve()}"
+
+
 def test_ids_provenance_and_project_root_scope() -> None:
     first = graph([Item("REQ-1")], content_revision=3, graph_generation=4)
     second = graph([Item("REQ-1")])
     assert first.project_id == second.project_id
-    assert {n.id for n in first.nodes} >= {"project:/project", "document:REQ", "item:REQ-1"}
+    assert {n.id for n in first.nodes} >= {project_id(), "document:REQ", "item:REQ-1"}
     item = next(n for n in first.nodes if n.id == "item:REQ-1")
     assert item.provenance.source_path == "REQ/REQ-1.req"
     assert (item.provenance.content_revision, item.provenance.graph_generation) == (3, 4)
@@ -85,7 +89,7 @@ def test_document_and_link_direction() -> None:
     b = Item("REQ-2")
     snapshot = graph([a, b])
     edges = {(e.relation_type, e.source_id, e.target_id) for e in snapshot.edges}
-    assert ("containsDocument", "project:/project", "document:REQ") in edges
+    assert ("containsDocument", project_id(), "document:REQ") in edges
     assert ("containsItem", "document:REQ", "item:REQ-1") in edges
     assert ("linksTo", "item:REQ-1", "item:REQ-2") in edges
 
@@ -127,25 +131,46 @@ def test_load_errors_have_no_stale_fields() -> None:
     }
 
 
+def test_missing_item_property_emits_error_state_item() -> None:
+    class MissingHeaderItem(Item):
+        @property
+        def header(self) -> str:
+            raise AttributeError("header unavailable")
+
+        @header.setter
+        def header(self, value: str) -> None:
+            pass
+
+    snapshot = graph([MissingHeaderItem("REQ-1")])
+    item = next(node for node in snapshot.nodes if node.id == "item:REQ-1")
+    assert dict(item.data) == {
+        "documentId": "document:REQ",
+        "error": "header unavailable",
+        "loadState": "error",
+        "reviewed": "unknown",
+        "uid": "REQ-1",
+    }
+
+
 def test_validation_current_stale_and_project_association() -> None:
     findings = [ValidationFinding("error", "broken", "REQ-1"), ValidationFinding("warning", "whole project")]
     current = graph(
         [Item("REQ-1")],
         content_revision=5,
         validation_revision=5,
-        validation_project_id="project:/project",
+        validation_project_id=project_id(),
         validation_state="succeeded",
         validation_run_id="run",
         validation_findings=findings,
     )
     associated = {e.target_id for e in current.edges if e.relation_type == "reportedFor"}
-    assert associated == {"item:REQ-1", "project:/project"}
+    assert associated == {"item:REQ-1", project_id()}
     assert {dict(n.data)["state"] for n in current.nodes if n.node_type == "ValidationFinding"} == {"current"}
     stale = graph(
         [Item("REQ-1")],
         content_revision=6,
         validation_revision=5,
-        validation_project_id="project:/project",
+        validation_project_id=project_id(),
         validation_state="succeeded",
         validation_findings=findings,
     )
@@ -172,7 +197,7 @@ def test_validation_current_stale_and_project_association() -> None:
     missing_revision = graph(
         [Item("REQ-1")],
         content_revision=5,
-        validation_project_id="project:/project",
+        validation_project_id=project_id(),
         validation_state="succeeded",
         validation_findings=findings,
     )
@@ -187,7 +212,7 @@ def test_parent_document_direction_and_primitive_serializer() -> None:
     edge = next(e for e in snapshot.edges if e.relation_type == "childDocumentOf")
     assert (edge.source_id, edge.target_id) == ("document:SUB", "document:TOP")
     primitive = snapshot.to_primitives()
-    assert primitive["projectId"] == "project:/project"
+    assert primitive["projectId"] == project_id()
     child_primitive = next(n for n in primitive["nodes"] if n["id"] == "document:SUB")
     assert child_primitive["provenance"] == {
         "sourcePath": "SUB",
@@ -211,7 +236,7 @@ def test_primitive_serializer_includes_finding_and_validation_provenance() -> No
         graph_generation=9,
         observed_at="2024-01-01T00:00:00+00:00",
         validation_run_id="run-2",
-        validation_project_id="project:/project",
+        validation_project_id=project_id(),
         validation_revision=7,
         validation_state="succeeded",
         validation_findings=[ValidationFinding("error", "broken", "REQ-1")],
@@ -233,7 +258,7 @@ def test_primitive_serializer_includes_finding_and_validation_provenance() -> No
     assert relation["provenance"] == finding["provenance"]
     assert primitive["validationRun"] == {
         "runId": "run-2",
-        "projectId": "project:/project",
+        "projectId": project_id(),
         "inputContentRevision": 7,
         "state": "succeeded",
         "startedAt": None,

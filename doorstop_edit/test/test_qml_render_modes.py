@@ -1,5 +1,6 @@
 """RenderPreview integration: real Qt Quick, WebEngine, WebChannel and RenderWorker."""
 
+import os
 import re
 import time
 from pathlib import Path
@@ -13,6 +14,7 @@ from PySide6.QtWebEngineQuick import QtWebEngineQuick
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 
+from doorstop_edit.item_render import fragmented_markdown
 from doorstop_edit.item_render.render_worker import ItemRenderer
 from doorstop_edit.qml_backend import QmlBackend
 from doorstop_edit.qml_render_bridge import QmlRenderBridge
@@ -27,12 +29,18 @@ def preview_host(qapp: QApplication, qtbot: QtBot, tmp_path: Path) -> Any:
     """Make the production component with a JS probe, then stop the actual worker."""
     instances: list[tuple[QmlBackend, QmlRenderBridge, QQmlApplicationEngine, QQmlComponent, QQuickWindow]] = []
 
-    def create(num_docs: int = 1, count: int = 2) -> tuple[QmlBackend, QmlRenderBridge, QQuickWindow]:
+    def create(
+        num_docs: int = 1, count: int = 2, preserve_plantuml: bool = False
+    ) -> tuple[QmlBackend, QmlRenderBridge, QQuickWindow]:
         generate_tree(tmp_path, num_docs=num_docs, num_req=count)
         # Avoid network-bound PlantUML diagrams: this suite exercises page/worker
         # lifecycle, not the external renderer.
-        for path in tmp_path.glob("REQ-*/*.yml"):
-            path.write_text(re.sub(r"  ```plantuml.*?  ```", "  Plain diagram", path.read_text(), flags=re.S))
+        if not preserve_plantuml:
+            for path in tmp_path.glob("REQ-*/*.yml"):
+                path.write_text(re.sub(r"  ```plantuml.*?  ```", "  Plain diagram", path.read_text(), flags=re.S))
+        else:
+            target = tmp_path / "REQ-A" / "REQ-A-010.yml"
+            target.write_text(target.read_text().replace("MakeFood()", "QML_RENDER_REGRESSION_2026"))
         backend = QmlBackend(root=tmp_path)
         backend.selectDocument("REQ-A")
         backend.selectItem("REQ-A-001")
@@ -50,7 +58,8 @@ ApplicationWindow {
             "(function(){var e=document.getElementById('" + uid + "');"
             + "return e ? {html:e.innerHTML,display:e.style.display,"
             + "selected:e.classList.contains('selected'),"
-            + "count:document.querySelectorAll('.doorstop-item').length} : null})()",
+            + "count:document.querySelectorAll('.doorstop-item').length,"
+            + "images:Array.from(e.querySelectorAll('img')).map(i=>[i.complete,i.naturalWidth])} : null})()",
             function(value) { probe = value })
     }
     App.RenderPreview { id: preview; objectName: "renderPreview"; anchors.fill: parent; renderBridge: previewRenderer }
@@ -108,6 +117,30 @@ def test_large_document_progress_and_partial_save(preview_host: Any, qtbot: QtBo
     assert "REQ-A-003" in updates
     assert not page_changes  # same document: update fragments rather than rebuilding the page
     assert "New saved preview header" in inspect(qtbot, window, "REQ-A-003")["html"]
+
+
+@pytest.mark.skipif(
+    os.environ.get("DOORSTOP_RUN_PLANTUML_NETWORK_TESTS") != "1",
+    reason="requires the external PlantUML server; set DOORSTOP_RUN_PLANTUML_NETWORK_TESTS=1 to run",
+)
+def test_plantuml_block_is_rendered_in_webengine_preview(
+    preview_host: Any, qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fragmented_markdown, "PLANTUML_CACHE", tmp_path / "plantuml-cache")
+    _, renderer, window = preview_host(count=10, preserve_plantuml=True)
+    done(qtbot, renderer)
+
+    rendered_html = inspect(qtbot, window, "REQ-A-010")["html"]
+    assert "QML_RENDER_REGRESSION_2026" not in rendered_html
+    assert "<img" in rendered_html
+    qtbot.waitUntil(
+        lambda: (
+            bool(inspect(qtbot, window, "REQ-A-010")["images"])
+            and all(image[0] and image[1] > 0 for image in inspect(qtbot, window, "REQ-A-010")["images"])
+        ),
+        timeout=60000,
+    )
+    assert not renderer.errorMessage
 
 
 def test_modes_selection_restore_and_reload_during_active_work(

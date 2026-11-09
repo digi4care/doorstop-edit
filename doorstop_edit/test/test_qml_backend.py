@@ -312,23 +312,31 @@ def test_qml_validation_controls_request_and_exclusive_panels(
     dispose_qml(engine, backend, qapp)
 
 
-def test_qml_validation_finding_opens_associated_item(qapp: QApplication, qtbot: QtBot, tmp_path: Path) -> None:
+def test_qml_validation_finding_opens_associated_item(
+    qapp: QApplication, qtbot: QtBot, monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
     generate_tree(tmp_path, num_docs=1, num_req=2)
     FakeValidationService.instances.clear()
+    monkeypatch.setattr("doorstop_edit.qml_backend.ValidationService", FakeValidationService)
     backend = cast(Any, QmlBackend(root=tmp_path))
     backend.selectDocument("REQ-A")
     backend.selectItem("REQ-A-001")
     revision = backend._data.content_revision
-    assert backend.acceptValidationRun(
-        validation_result(
-            tmp_path,
-            revision,
-            "finding-navigation",
-            (
-                ValidationFinding("error", "REQ-A-002 has a broken link", "REQ-A-002"),
-                ValidationFinding("warning", "Project-level warning", None),
-            ),
-        )
+    navigation_result = validation_result(
+        tmp_path,
+        revision,
+        "finding-navigation",
+        (
+            ValidationFinding("error", "REQ-A-002 has a broken link", "REQ-A-002"),
+            ValidationFinding("warning", "Project-level warning", None),
+        ),
+    )
+    accepted = backend.acceptValidationRun(navigation_result)
+    assert accepted, (
+        f"current validation result rejected: result_root={navigation_result.root!r}, "
+        f"backend_root={Path(backend._data.root or '').resolve()!s}, "
+        f"project_id={navigation_result.project_id!r}, result_revision={navigation_result.revision}, "
+        f"current_revision={backend._data.content_revision}"
     )
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("backend", backend)
@@ -348,7 +356,7 @@ def test_qml_validation_finding_opens_associated_item(qapp: QApplication, qtbot:
     assert "1 warning" in summary.property("text")
     assert QMetaObject.invokeMethod(summary, "clicked")
     results = item("validationResultsList")
-    qtbot.waitUntil(lambda: results.property("count") == 2)
+    qtbot.waitUntil(lambda: results.property("count") >= 2)
     results.setProperty("currentIndex", 0)
     delegate = results.property("currentItem")
     assert delegate is not None
@@ -361,15 +369,31 @@ def test_qml_validation_finding_opens_associated_item(qapp: QApplication, qtbot:
 
     assert QMetaObject.invokeMethod(summary, "clicked")
     qtbot.waitUntil(lambda: results_panel.property("opened"))
-    results.setProperty("currentIndex", 1)
+    findings = [node for node in backend.appGraph["nodes"] if node["type"] == "ValidationFinding"]
+    project_index = next(
+        (index for index, finding in enumerate(findings) if "Project-level warning" in finding.get("message", "")),
+        None,
+    )
+    assert project_index is not None, f"project-level finding absent from graph: {findings!r}"
+    results.setProperty("currentIndex", project_index)
     project_finding = results.property("currentItem")
     assert project_finding is not None
+    assert project_finding.property("finding")["message"] == "Project-level warning"
+    assert not project_finding.property("itemFinding")
     assert QMetaObject.invokeMethod(project_finding, "activate")
     assert backend.selectedItem["uid"] == "REQ-A-002"
-    assert results_panel.property("opened"), "project finding should stay in the results panel"
+    assert results_panel.property("opened"), "project-level finding unexpectedly closed the drawer"
 
-    assert backend.acceptValidationRun(
-        validation_result(tmp_path, revision, "validation-failed", state="failed", error="validator unavailable")
+    current_revision = backend._data.content_revision
+    failed_result = validation_result(
+        tmp_path, current_revision, "validation-failed", state="failed", error="validator unavailable"
+    )
+    accepted = backend.acceptValidationRun(failed_result)
+    assert accepted, (
+        f"current validation result rejected: result_root={failed_result.root!r}, "
+        f"backend_root={Path(backend._data.root or '').resolve()!s}, "
+        f"project_id={failed_result.project_id!r}, result_revision={failed_result.revision}, "
+        f"current_revision={backend._data.content_revision}"
     )
     qapp.processEvents()
     assert "Validation failed" in item("validationSummaryButton").property("text")

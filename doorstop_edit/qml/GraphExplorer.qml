@@ -84,30 +84,30 @@ Pane {
     }
 
     function labelFor(node) {
-        if (!node) return "Unknown node"
-        if (node.type === "Project") return "Project"
+        if (!node) return qsTr("Unknown node")
+        if (node.type === "Project") return qsTr("Project")
         if (node.type === "Document") return node.prefix || node.id
         if (node.type === "ValidationFinding") return node.severity + ": " + node.message
         return node.uid || node.id
     }
     function statusFor(node) {
-        if (!node) return "Unknown"
+        if (!node) return qsTr("Unknown")
         if (node.type === "Item") {
-            let state = node.loadState === "error" ? "Load error" : (node.reviewed || "Unknown review")
-            if (node.active === false) state += " · inactive"
+            let state = node.loadState === "error" ? qsTr("Load error") : (node.reviewed || qsTr("Unknown review"))
+            if (node.active === false) state += qsTr(" · inactive")
             for (const status of ["suspect", "unresolved", "unknown"])
-                if (hasLinkStatus(node, status)) state += " · link " + status
+                if (hasLinkStatus(node, status)) state += qsTr(" · link %1").arg(status)
             return state
         }
-        if (node.type === "UnresolvedItem") return "Unresolved target"
+        if (node.type === "UnresolvedItem") return qsTr("Unresolved target")
         if (node.type === "ValidationFinding") return node.severity + " · " + node.state
         return node.type
     }
     function edgeLabel(edge) {
-        if (edge.type === "linksTo") return "Link · " + edge.status
-        if (edge.type === "childDocumentOf") return "Parent document"
-        if (edge.type === "reportedFor") return "Finding · " + edge.status
-        return edge.type === "containsItem" ? "Contains item" : "Contains document"
+        if (edge.type === "linksTo") return qsTr("Link · %1").arg(edge.status)
+        if (edge.type === "childDocumentOf") return qsTr("Parent document")
+        if (edge.type === "reportedFor") return qsTr("Finding · %1").arg(edge.status)
+        return edge.type === "containsItem" ? qsTr("Contains item") : qsTr("Contains document")
     }
     function hasLinkStatus(node, status) {
         const edges = edgesByNode[node.id] || []
@@ -129,6 +129,12 @@ Pane {
         }
         return false
     }
+    // Filter labels are translated; graph status identifiers remain stable.
+    function reviewValue() { return ["", "reviewed", "needsReview", "unknown"][reviewFilter.currentIndex] }
+    function linkValue() { return ["", "suspect", "unresolved", "unknown", "ok"][linkFilter.currentIndex] }
+    function severityValue() { return ["Any", "error", "warning", "info"][severityFilter.currentIndex] }
+    function findingValue() { return ["Any", "current", "stale"][findingFilter.currentIndex] }
+    function runValue() { return ["notRun", "running", "failed", "succeeded"][findingFilter.currentIndex - 3] }
     function matches(node) {
         const q = searchField.text.trim().toLowerCase()
         const doc = documentField.text.trim().toLowerCase()
@@ -143,14 +149,14 @@ Pane {
         if (activeFilter.currentIndex && (node.type !== "Item" || node.active !== (activeFilter.currentIndex === 1))) return false
         if (normativeFilter.currentIndex && (node.type !== "Item" || node.normative !== (normativeFilter.currentIndex === 1))) return false
         if (derivedFilter.currentIndex && (node.type !== "Item" || node.derived !== (derivedFilter.currentIndex === 1))) return false
-        if (reviewFilter.currentIndex && (node.type !== "Item" || String(node.reviewed) !== reviewFilter.currentText)) return false
-        if (linkFilter.currentIndex && !hasLinkStatus(node, linkFilter.currentText)) return false
-        if (findingFilter.currentIndex >= 3 && run.state !== findingFilter.currentText.replace("Run: ", ""))
+        if (reviewFilter.currentIndex && (node.type !== "Item" || String(node.reviewed) !== reviewValue())) return false
+        if (linkFilter.currentIndex && !hasLinkStatus(node, linkValue())) return false
+        if (findingFilter.currentIndex >= 3 && run.state !== runValue())
             return false
         if ((severityFilter.currentIndex || (findingFilter.currentIndex > 0 && findingFilter.currentIndex < 3))
-                && !hasFinding(node, severityFilter.currentIndex ? severityFilter.currentText : "Any",
+                && !hasFinding(node, severityValue(),
                                findingFilter.currentIndex > 0 && findingFilter.currentIndex < 3
-                                    ? findingFilter.currentText : "Any")) return false
+                                    ? findingValue() : "Any")) return false
         return true
     }
     function updateResults() {
@@ -184,12 +190,12 @@ Pane {
         if (relationFilter.currentIndex === 2 && edge.type !== "containsItem"
                 && edge.type !== "containsDocument" && edge.type !== "childDocumentOf") return false
         if (relationFilter.currentIndex === 3 && edge.type !== "reportedFor") return false
-        return edge.type !== "linksTo" || !linkFilter.currentIndex || edge.status === linkFilter.currentText
+        return edge.type !== "linksTo" || !linkFilter.currentIndex || edge.status === linkValue()
     }
     function updateMap() {
         const focus = focusedNode
         if (!focus) { mapNodes = []; mapEdges = []; return }
-        const visibleNodes = [{node: focus, x: 553, y: 470, relation: "Selected", path: "", edge: null}]
+        const visibleNodes = [{node: focus, x: 553, y: 470, relation: qsTr("Selected"), path: "", edge: null}]
         const visibleEdges = []
         const seen = ({})
         seen[focus.id] = true
@@ -246,7 +252,7 @@ Pane {
             Layout.fillWidth: true
             Label {
                 Layout.fillWidth: true
-                text: "GRAPH  /  EXPLORER"
+                text: qsTr("GRAPH  /  EXPLORER")
                 font.family: "DejaVu Sans Mono"
                 font.pixelSize: 16
                 font.bold: true
@@ -254,18 +260,19 @@ Pane {
             }
             Button {
                 objectName: "graphCloseButton"
-                text: "Back to editor ✕"
-                Accessible.name: "Close graph and return to document and item editor"
+                text: qsTr("Back to editor ✕")
+                Accessible.name: qsTr("Close graph and return to document and item editor")
                 onClicked: explorer.closeRequested()
             }
         }
         Label {
             objectName: "graphStatus"
             Layout.fillWidth: true
-            text: !explorer.graph.projectId ? (backend.projectRoot ? "Loading project graph…" : "Open a project to explore its graph.")
-                  : "Revision " + explorer.graph.contentRevision + "  ·  Graph " + explorer.graph.graphGeneration
-                    + "  ·  Validation: " + (explorer.run.state || "notRun")
-                    + (explorer.run.error ? " — " + explorer.run.error : "")
+            text: !explorer.graph.projectId ? (backend.projectRoot ? qsTr("Loading project graph…") : qsTr("Open a project to explore its graph."))
+                  : qsTr("Revision %1  ·  Graph %2  ·  Validation: %3")
+                        .arg(explorer.graph.contentRevision).arg(explorer.graph.graphGeneration)
+                        .arg(explorer.run.state || "notRun")
+                    + (explorer.run.error ? qsTr(" — %1").arg(explorer.run.error) : "")
             color: explorer.run.state === "failed" ? "#ffc39f" : "#b4cbd0"
             elide: Text.ElideRight
             Accessible.name: text
@@ -274,9 +281,9 @@ Pane {
             id: searchField
             objectName: "graphSearchField"
             Layout.fillWidth: true
-            placeholderText: "Search UID, header, document, finding…"
-            Accessible.name: "Search graph by UID, header, document or finding"
-            Accessible.description: "Press Down Arrow to jump to matching results; Tab moves through filters."
+            placeholderText: qsTr("Search UID, header, document, finding…")
+            Accessible.name: qsTr("Search graph by UID, header, document or finding")
+            Accessible.description: qsTr("Press Down Arrow to jump to matching results; Tab moves through filters.")
             onTextChanged: searchDelay.restart()
             Keys.onDownPressed: function(event) {
                 // Use the latest typed text even if the short debounce has not fired yet.
@@ -291,7 +298,7 @@ Pane {
         }
         Label {
             Layout.fillWidth: true
-            text: "RESULTS  /  Enter to focus · use Open in editor"
+            text: qsTr("RESULTS  /  Enter to focus · use Open in editor")
             font.family: "DejaVu Sans Mono"
             font.pixelSize: 11
             color: "#7ddac4"
@@ -305,7 +312,7 @@ Pane {
             property alias count: resultViewport.count
             property alias currentIndex: resultViewport.currentIndex
             property alias currentItem: resultViewport.currentItem
-            Accessible.name: "Graph search results. Up and Down select, Enter or Space focuses a node."
+            Accessible.name: qsTr("Graph search results. Up and Down select, Enter or Space focuses a node.")
             Accessible.role: Accessible.List
             function step(direction) {
                 if (count > 0)
@@ -336,8 +343,8 @@ Pane {
                     readonly property bool highlighted: node.id === explorer.focusId
                     Accessible.role: Accessible.ListItem
                     Accessible.description: resultList.currentIndex === index
-                        ? "Current result. Enter or Space focuses this node; then use Open in editor."
-                        : "Use Up or Down to select this result."
+                        ? qsTr("Current result. Enter or Space focuses this node; then use Open in editor.")
+                        : qsTr("Use Up or Down to select this result.")
                     Accessible.name: explorer.labelFor(node) + ", " + explorer.statusFor(node)
                     function activate() {
                         resultList.currentIndex = index
@@ -397,72 +404,72 @@ Pane {
                     id: documentField
                     objectName: "graphDocumentFilter"
                     width: 105
-                    placeholderText: "Document"
-                    Accessible.name: "Filter by document prefix"
+                    placeholderText: qsTr("Document")
+                    Accessible.name: qsTr("Filter by document prefix")
                     onTextChanged: searchDelay.restart()
                 }
                 TextField {
                     id: levelField
                     objectName: "graphLevelFilter"
                     width: 88
-                    placeholderText: "Level"
-                    Accessible.name: "Filter by level"
+                    placeholderText: qsTr("Level")
+                    Accessible.name: qsTr("Filter by level")
                     onTextChanged: searchDelay.restart()
                 }
                 ComboBox {
                     id: activeFilter
                     objectName: "graphActiveFilter"
                     width: 112
-                    model: ["Active: any", "Active", "Inactive"]
-                    Accessible.name: "Active status filter: " + currentText
+                    model: [qsTr("Active: any"), qsTr("Active"), qsTr("Inactive")]
+                    Accessible.name: qsTr("Active status filter: %1").arg(currentText)
                     onCurrentIndexChanged: searchDelay.restart()
                 }
                 ComboBox {
                     id: normativeFilter
                     objectName: "graphNormativeFilter"
                     width: 123
-                    model: ["Norm: any", "Normative", "Informative"]
-                    Accessible.name: "Normative status filter: " + currentText
+                    model: [qsTr("Norm: any"), qsTr("Normative"), qsTr("Informative")]
+                    Accessible.name: qsTr("Normative status filter: %1").arg(currentText)
                     onCurrentIndexChanged: searchDelay.restart()
                 }
                 ComboBox {
                     id: derivedFilter
                     objectName: "graphDerivedFilter"
                     width: 125
-                    model: ["Derived: any", "Derived", "Not derived"]
-                    Accessible.name: "Derived status filter: " + currentText
+                    model: [qsTr("Derived: any"), qsTr("Derived"), qsTr("Not derived")]
+                    Accessible.name: qsTr("Derived status filter: %1").arg(currentText)
                     onCurrentIndexChanged: searchDelay.restart()
                 }
                 ComboBox {
                     id: reviewFilter
                     objectName: "graphReviewFilter"
                     width: 132
-                    model: ["Review: any", "reviewed", "needsReview", "unknown"]
-                    Accessible.name: "Review status filter: " + currentText
+                    model: [qsTr("Review: any"), qsTr("reviewed"), qsTr("needsReview"), qsTr("unknown")]
+                    Accessible.name: qsTr("Review status filter: %1").arg(currentText)
                     onCurrentIndexChanged: searchDelay.restart()
                 }
                 ComboBox {
                     id: linkFilter
                     objectName: "graphLinkFilter"
                     width: 140
-                    model: ["Link: any", "suspect", "unresolved", "unknown", "ok"]
-                    Accessible.name: "Link status filter: " + currentText
+                    model: [qsTr("Link: any"), qsTr("suspect"), qsTr("unresolved"), qsTr("unknown"), qsTr("ok")]
+                    Accessible.name: qsTr("Link status filter: %1").arg(currentText)
                     onCurrentIndexChanged: { searchDelay.restart(); explorer.updateMap() }
                 }
                 ComboBox {
                     id: severityFilter
                     objectName: "graphSeverityFilter"
                     width: 136
-                    model: ["Severity: any", "error", "warning", "info"]
-                    Accessible.name: "Validation severity filter: " + currentText
+                    model: [qsTr("Severity: any"), qsTr("error"), qsTr("warning"), qsTr("info")]
+                    Accessible.name: qsTr("Validation severity filter: %1").arg(currentText)
                     onCurrentIndexChanged: searchDelay.restart()
                 }
                 ComboBox {
                     id: findingFilter
                     objectName: "graphFindingStateFilter"
                     width: 144
-                    model: ["Finding: any", "current", "stale", "Run: notRun", "Run: running", "Run: failed", "Run: succeeded"]
-                    Accessible.name: "Validation finding state filter: " + currentText
+                    model: [qsTr("Finding: any"), qsTr("current"), qsTr("stale"), qsTr("Run: notRun"), qsTr("Run: running"), qsTr("Run: failed"), qsTr("Run: succeeded")]
+                    Accessible.name: qsTr("Validation finding state filter: %1").arg(currentText)
                     onCurrentIndexChanged: searchDelay.restart()
                 }
             }
@@ -473,16 +480,16 @@ Pane {
                 id: directionFilter
                 objectName: "graphDirectionFilter"
                 Layout.fillWidth: true
-                model: ["Direct neighbors", "Incoming impact · all levels"]
-                Accessible.name: "Graph direction: " + currentText
+                model: [qsTr("Direct neighbors"), qsTr("Incoming impact · all levels")]
+                Accessible.name: qsTr("Graph direction: %1").arg(currentText)
                 onCurrentIndexChanged: explorer.updateMap()
             }
             ComboBox {
                 id: relationFilter
                 objectName: "graphRelationFilter"
                 Layout.fillWidth: true
-                model: ["All relations", "Links", "Structure", "Findings"]
-                Accessible.name: "Relation type: " + currentText
+                model: [qsTr("All relations"), qsTr("Links"), qsTr("Structure"), qsTr("Findings")]
+                Accessible.name: qsTr("Relation type: %1").arg(currentText)
                 onCurrentIndexChanged: explorer.updateMap()
             }
         }
@@ -490,15 +497,15 @@ Pane {
             Layout.fillWidth: true
             Label {
                 Layout.fillWidth: true
-                text: explorer.results.length + " matches  ·  " + Math.max(0, explorer.mapNodes.length - 1)
-                      + " shown around selection" + (explorer.mapNodes.length === 25 ? " (first 24; refine search)" : "")
+                text: explorer.results.length + qsTr(" matches  ·  %1 shown around selection").arg(Math.max(0, explorer.mapNodes.length - 1))
+                      + (explorer.mapNodes.length === 25 ? qsTr(" (first 24; refine search)") : "")
                 elide: Text.ElideRight
                 color: "#b4cbd0"
                 Accessible.name: text
             }
-            Button { objectName: "graphZoomOut"; text: "−"; Accessible.name: "Zoom out graph"; onClicked: explorer.adjustZoom(-0.15) }
-            Label { text: Math.round(explorer.mapZoom * 100) + "%"; Accessible.name: "Graph zoom " + text }
-            Button { objectName: "graphZoomIn"; text: "+"; Accessible.name: "Zoom in graph"; onClicked: explorer.adjustZoom(0.15) }
+            Button { objectName: "graphZoomOut"; text: "−"; Accessible.name: qsTr("Zoom out graph"); onClicked: explorer.adjustZoom(-0.15) }
+            Label { text: Math.round(explorer.mapZoom * 100) + "%"; Accessible.name: qsTr("Graph zoom %1").arg(text) }
+            Button { objectName: "graphZoomIn"; text: "+"; Accessible.name: qsTr("Zoom in graph"); onClicked: explorer.adjustZoom(0.15) }
         }
         Rectangle {
             Layout.fillWidth: true
@@ -516,7 +523,7 @@ Pane {
                 boundsBehavior: Flickable.StopAtBounds
                 clip: true
                 activeFocusOnTab: true
-                Accessible.name: "Graph map. Arrow keys pan, plus and minus zoom. Tab to focus nodes."
+                Accessible.name: qsTr("Graph map. Arrow keys pan, plus and minus zoom. Tab to focus nodes.")
                 Keys.onLeftPressed: contentX = Math.max(0, contentX - 60)
                 Keys.onRightPressed: contentX = Math.min(contentWidth - width, contentX + 60)
                 Keys.onUpPressed: contentY = Math.max(0, contentY - 60)
@@ -584,8 +591,8 @@ Pane {
                             font.pixelSize: 11
                             Accessible.name: explorer.labelFor(entry.node) + ", " + explorer.statusFor(entry.node)
                                              + ", " + entry.relation
-                                             + (entry.path ? ", path " + entry.path : "")
-                            Accessible.description: "Select for details; open in editor with the button below."
+                                             + (entry.path ? qsTr(", path %1").arg(entry.path) : "")
+                            Accessible.description: qsTr("Select for details; open in editor with the button below.")
                             background: Rectangle {
                                 radius: 5
                                 color: index === 0 ? "#236a68" : "#293f4b"
@@ -606,11 +613,11 @@ Pane {
             Label {
                 anchors.centerIn: parent
                 visible: explorer.mapNodes.length === 0
-                text: !explorer.graph.projectId ? "Graph unavailable until a project opens."
-                      : linkFilter.currentIndex ? "No links with this status match the filters."
+                text: !explorer.graph.projectId ? qsTr("Graph unavailable until a project opens.")
+                      : linkFilter.currentIndex ? qsTr("No links with this status match the filters.")
                       : severityFilter.currentIndex || findingFilter.currentIndex
-                        ? "No validation results match the filters. Check the run state above."
-                      : "No matching nodes. Change the search or filters."
+                        ? qsTr("No validation results match the filters. Check the run state above.")
+                      : qsTr("No matching nodes. Change the search or filters.")
                 color: "#eef4f4"
                 wrapMode: Text.WordWrap
                 width: parent.width - 24
@@ -631,14 +638,14 @@ Pane {
                     Layout.fillWidth: true
                     Label {
                         Layout.fillWidth: true
-                        text: explorer.focusedNode ? explorer.labelFor(explorer.focusedNode) + "  ·  " + explorer.statusFor(explorer.focusedNode) : "No selection"
+                        text: explorer.focusedNode ? explorer.labelFor(explorer.focusedNode) + qsTr("  ·  ") + explorer.statusFor(explorer.focusedNode) : qsTr("No selection")
                         font.bold: true
                         elide: Text.ElideRight
-                        Accessible.name: "Selected graph node: " + text
+                        Accessible.name: qsTr("Selected graph node: %1").arg(text)
                     }
                     Button {
                         objectName: "graphOpenInEditorButton"
-                        text: explorer.focusedNode && explorer.focusedNode.type === "Document" ? "Open document ↗" : "Open in editor ↗"
+                        text: explorer.focusedNode && explorer.focusedNode.type === "Document" ? qsTr("Open document ↗") : qsTr("Open in editor ↗")
                         enabled: explorer.focusedNode && (explorer.focusedNode.type === "Document" || explorer.focusedNode.type === "Item")
                         Accessible.name: text
                         onClicked: explorer.activateNode(explorer.focusedNode)
@@ -646,23 +653,23 @@ Pane {
                 }
                 Label {
                     Layout.fillWidth: true
-                    text: (explorer.focusPath || explorer.focusRelation || "Select a map node to inspect its relation.")
+                    text: (explorer.focusPath || explorer.focusRelation || qsTr("Select a map node to inspect its relation."))
                           + (explorer.focusEdge && explorer.focusEdge.provenance
-                             ? " · " + (explorer.focusEdge.provenance.sourcePath || explorer.focusEdge.provenance.sourceKey || "")
+                             ? qsTr(" · ") + (explorer.focusEdge.provenance.sourcePath || explorer.focusEdge.provenance.sourceKey || "")
                                + (explorer.focusEdge.type === "linksTo"
-                                  ? " · stored stamp: " + (explorer.focusEdge.provenance.storedLinkStamp || "unavailable")
-                                    + " · target stamp: " + (explorer.focusEdge.provenance.currentTargetStamp || "unavailable") : "")
+                                  ? qsTr(" · stored stamp: %1").arg(explorer.focusEdge.provenance.storedLinkStamp || qsTr("unavailable"))
+                                    + qsTr(" · target stamp: %1").arg(explorer.focusEdge.provenance.currentTargetStamp || qsTr("unavailable")) : "")
                              : "")
                     elide: Text.ElideRight
                     color: "#7ddac4"
-                    Accessible.name: "Relation: " + text
+                    Accessible.name: qsTr("Relation: %1").arg(text)
                 }
                 Label {
                     Layout.fillWidth: true
                     text: explorer.focusedNode
                           ? (explorer.focusedNode.header || explorer.focusedNode.message || "")
-                            + "  ·  Source: " + (explorer.focusedNode.provenance.sourcePath || explorer.focusedNode.provenance.sourceKind || "unknown")
-                          : "Select a result or map node."
+                            + qsTr("  ·  Source: %1").arg(explorer.focusedNode.provenance.sourcePath || explorer.focusedNode.provenance.sourceKind || qsTr("unknown"))
+                          : qsTr("Select a result or map node.")
                     elide: Text.ElideRight
                     color: "#b4cbd0"
                     Accessible.name: text

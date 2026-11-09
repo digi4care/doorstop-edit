@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from pytest import MonkeyPatch
 from watchdog.events import FileDeletedEvent, FileModifiedEvent
 from watchdog.observers import Observer
+from watchdog.observers.api import BaseObserver
 from watchdog.observers.polling import PollingObserver
 
 import doorstop_edit.utils.file_watcher as file_watcher_module
@@ -110,34 +111,32 @@ def test_pause_discards_queued_changes_and_advances_generation(tmp_path: Path) -
     watcher.stop()
 
 
-def test_queued_event_from_old_watch_period_is_ignored(tmp_path: Path) -> None:
-    calls: list[tuple[bool, tuple[str, ...], int]] = []
-    watcher = FileWatcher(lambda changed, paths, generation: calls.append((changed, paths, generation)))
-    watcher.start()
-    watcher.watch([SimpleNamespace(path=tmp_path)])
-    old_observer = watcher.observer
-    old_watch = next(iter(old_observer._watches))
-
-    # Stop dispatch first so this exact queued (event, watch) survives until pause.
-    old_observer.stop()
-    old_observer.join(timeout=5)
-    assert not old_observer.is_alive()
-    old_observer.event_queue.put((FileModifiedEvent(str(tmp_path / "item.yml")), old_watch))
-    watcher.pause()
-    watcher.resume()
-
-    sleep(watcher.DEBOUNCE_SECONDS * 2)
-    assert calls == []
-
+def test_callback_from_old_watch_period_is_ignored(tmp_path: Path) -> None:
     received = Event()
+    calls: list[tuple[bool, tuple[str, ...], int]] = []
 
     def on_change(changed: bool, paths: tuple[str, ...], generation: int) -> None:
         calls.append((changed, paths, generation))
         received.set()
 
-    watcher.on_dir_changed = on_change
-    fresh_watch = next(iter(watcher.observer._watches))
-    watcher.observer.event_queue.put((FileModifiedEvent(str(tmp_path / "fresh.yml")), fresh_watch))
+    watcher = FileWatcher(on_change)
+    watcher.watch([SimpleNamespace(path=tmp_path)])
+    old_handler = watcher._handler
+    assert old_handler is not None
+    old_generation = watcher.generation
+
+    # Dispatch the old watch's callback after the generation changes. Avoid
+    # relying on native observer queue timing, which differs by OS.
+    watcher.pause()
+    watcher.resume()
+    assert watcher.generation == old_generation + 1
+    old_handler.on_modified(FileModifiedEvent(str(tmp_path / "item.yml")))
+    sleep(watcher.DEBOUNCE_SECONDS * 2)
+    assert calls == []
+
+    fresh_handler = watcher._handler
+    assert fresh_handler is not None
+    fresh_handler.on_modified(FileModifiedEvent(str(tmp_path / "fresh.yml")))
     assert received.wait(1)
     assert calls == [(True, (str((tmp_path / "fresh.yml").resolve()),), watcher.generation)]
     watcher.stop()
@@ -241,7 +240,13 @@ def test_watch_schedules_once_before_start_and_while_running(tmp_path: Path, mon
     root = tmp_path / "root"
     root.mkdir()
     scheduled: list[str] = []
-    monkeypatch.setattr(Observer, "schedule", lambda _observer, _handler, path, recursive=False: scheduled.append(path))
+
+    def record_schedule(
+        _observer: BaseObserver, _handler: object, path: str, recursive: bool = False, **_kwargs: object
+    ) -> None:
+        scheduled.append(path)
+
+    monkeypatch.setattr(BaseObserver, "schedule", record_schedule)
     watcher.watch([SimpleNamespace(path=root)])
     assert len(scheduled) == 1
     watcher.start()

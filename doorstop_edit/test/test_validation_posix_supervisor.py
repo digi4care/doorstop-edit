@@ -326,3 +326,114 @@ def test_reaped_supervisor_retains_and_retries_descriptor_close(
     owner.reap_supervisor(timeout=0)
     assert owner.status_fd == -1
     assert owner.confirm_group_absent(timeout=1)
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("42 Z\n42 Z+\n", True),
+        ("42 S\n", False),
+        ("7 S\n", True),
+        ("not-ps-output\n", False),
+    ],
+)
+def test_group_state_probe_parses_exact_pgid(monkeypatch: pytest.MonkeyPatch, output: str, expected: bool) -> None:
+    def run(*args: Any, **kwargs: Any) -> Any:
+        assert args[0] == ["ps", "-eo", "pgid=,stat="]
+        assert kwargs["timeout"] <= 0.5
+        return subprocess.CompletedProcess(args[0], 0, output, "")
+
+    monkeypatch.setattr(supervisor_module.subprocess, "run", run)
+    assert supervisor_module._group_has_no_live_members(42) is expected
+
+
+@pytest.mark.parametrize("failure", [subprocess.CalledProcessError(1, "ps"), subprocess.TimeoutExpired("ps", 0.5)])
+def test_group_state_probe_fails_closed_on_command_errors(monkeypatch: pytest.MonkeyPatch, failure: Exception) -> None:
+    def run(*args: Any, **kwargs: Any) -> Any:
+        raise failure
+
+    monkeypatch.setattr(supervisor_module.subprocess, "run", run)
+    assert not supervisor_module._group_has_no_live_members(42)
+
+
+def test_signal_permission_error_with_only_zombies_is_confirmed(
+    owners: list[PosixValidationOwner], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, _, _ = _launch(owners, tmp_path, "blocked")
+    try:
+        monkeypatch.setattr(
+            supervisor_module.os,
+            "killpg",
+            lambda *_: (_ for _ in ()).throw(PermissionError(1, "denied")),
+        )
+
+        def ps_run(*args: Any, **kwargs: Any) -> Any:
+            assert args[0] == ["ps", "-eo", "pgid=,stat="]
+            return subprocess.CompletedProcess(args[0], 0, f"{owner.group_id} Z\n", "")
+
+        monkeypatch.setattr(supervisor_module.subprocess, "run", ps_run)
+        owner.signal_group()
+        assert owner._kill_requested
+    finally:
+        monkeypatch.undo()
+        owner.shutdown(timeout=1)
+
+
+def test_signal_permission_error_with_live_member_remains_failure(
+    owners: list[PosixValidationOwner], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, _, _ = _launch(owners, tmp_path, "blocked")
+    try:
+        monkeypatch.setattr(
+            supervisor_module.os,
+            "killpg",
+            lambda *_: (_ for _ in ()).throw(PermissionError(1, "denied")),
+        )
+        monkeypatch.setattr(
+            supervisor_module.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, f"{owner.group_id} S\n", ""),
+        )
+        with pytest.raises(PermissionError):
+            owner.signal_group()
+        assert not owner._kill_requested
+    finally:
+        monkeypatch.undo()
+        owner.shutdown(timeout=1)
+
+
+@pytest.mark.parametrize(
+    ("output", "failure", "expected"),
+    [("42 Z\n", None, True), ("", None, True), ("42 S\n", None, False), (None, OSError("ps unavailable"), False)],
+)
+def test_confirm_absent_permission_error_uses_group_state_probe(
+    owners: list[PosixValidationOwner],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output: str | None,
+    failure: Exception | None,
+    expected: bool,
+) -> None:
+    owner, _, _ = _launch(owners, tmp_path, "blocked")
+    owner._kill_requested = True
+    owner.supervisor_reaped = True
+
+    def permission_error(*args: Any) -> None:
+        raise PermissionError(1, "denied")
+
+    def ps_run(*args: Any, **kwargs: Any) -> Any:
+        assert args[0] == ["ps", "-eo", "pgid=,stat="]
+        if failure is not None:
+            raise failure
+        report = output.replace("42", str(owner.group_id)) if output is not None else None
+        return subprocess.CompletedProcess(args[0], 0, report, "")
+
+    try:
+        monkeypatch.setattr(supervisor_module.os, "killpg", permission_error)
+        monkeypatch.setattr(supervisor_module.subprocess, "run", ps_run)
+        assert owner.confirm_group_absent(timeout=0.1) is expected
+    finally:
+        monkeypatch.undo()
+        owner.supervisor_reaped = False
+        owner._kill_requested = False
+        owner.shutdown(timeout=1)

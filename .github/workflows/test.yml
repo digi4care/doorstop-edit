@@ -99,11 +99,11 @@ jobs:
 
       - name: Run tests (Ubuntu)
         if: ${{ matrix.os == 'Ubuntu' }}
-        run: xvfb-run uv run --no-sync pytest -ra --color=yes --cov=doorstop_edit --cov-report=xml
+        run: xvfb-run uv run --no-sync pytest -vv -ra --setup-show -o faulthandler_timeout=120 --color=yes --cov=doorstop_edit --cov-report=xml
 
       - name: Run tests (other)
         if: ${{ matrix.os != 'Ubuntu' }}
-        run: uv run --no-sync pytest -ra -s --color=yes --cov=doorstop_edit --cov-report=xml
+        run: uv run --no-sync pytest -vv -ra -s --color=yes --cov=doorstop_edit --cov-report=xml
 
       - uses: codecov/codecov-action@v4
         if: ${{ matrix.os == 'Ubuntu' && matrix.python-version == '3.11' && github.repository == 'ownbee/doorstop-edit' }}

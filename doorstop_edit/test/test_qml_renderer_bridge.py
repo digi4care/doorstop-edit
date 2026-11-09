@@ -28,6 +28,10 @@ def test_worker_html_reaches_qml_webengine_and_webchannel_callback(
     backend.selectDocument("REQ-A")
     backend.selectItem("REQ-A-001")
     renderer = QmlRenderBridge(backend)
+    page_html = str(renderer.pageHtml)
+    ready_index = page_html.index("py.bridgeReady(")
+    assert page_html.index("py.html_update_item.connect") < ready_index
+    assert page_html.index("py.html_select_item.connect") < ready_index
     engine = QQmlApplicationEngine()
     qml_warnings: list[str] = []
     engine.warnings.connect(lambda warnings: qml_warnings.extend(w.toString() for w in warnings))
@@ -64,15 +68,31 @@ ApplicationWindow {
         assert isinstance(window, QQuickWindow), component.errors()
         preview = window.findChild(QObject, "renderPreview")
         assert preview is not None
-        qtbot.waitUntil(lambda: renderer._render_started, timeout=15000)
-        qtbot.waitUntil(lambda: bool(renderer._channel_ready), timeout=15000)
-        for _ in range(30):
+        web_view = window.findChild(QObject, "renderWebView")
+        assert web_view is not None
+        qtbot.waitUntil(lambda: renderer._render_started or bool(renderer.errorMessage), timeout=15000)
+        assert renderer._render_started, (
+            "WebEngine/WebChannel readiness did not start rendering: "
+            f"loaded={renderer._loaded}, channel_ready={renderer._channel_ready}, "
+            f"generation={renderer._page_generation}, web_loading={web_view.property('loading')}, "
+            f"web_progress={web_view.property('loadProgress')}, web_url={web_view.property('url')}, "
+            f"error={renderer.errorMessage!r}, qml_warnings={qml_warnings!r}"
+        )
+        qtbot.waitUntil(lambda: renderer.progress == 100 or bool(renderer.errorMessage), timeout=30000)
+        assert not renderer.errorMessage, f"Markdown rendering failed: {renderer.errorMessage}"
+
+        for _ in range(200):
             getattr(window, "capture")()
-            if "REQ-A-001" in str(window.property("observedHtml")):
+            observed_html = str(window.property("observedHtml"))
+            if "REQ-A-001" in observed_html and "req-table" in observed_html:
                 break
             qtbot.wait(100)
-        assert "REQ-A-001" in str(window.property("observedHtml"))
-        assert "req-table" in str(window.property("observedHtml"))
+        else:
+            pytest.fail(
+                "rendered item HTML did not reach WebEngine; "
+                f"loaded={renderer._loaded}, channel_ready={renderer._channel_ready}, "
+                f"progress={renderer.progress}, error={renderer.errorMessage!r}"
+            )
 
         requested: list[tuple[str, str]] = []
         popups: list[tuple[QObject, str]] = []

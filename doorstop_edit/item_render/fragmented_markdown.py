@@ -17,7 +17,7 @@ class FragmentedMarkdown(Markdown):
             "markdown.extensions.extra",
             "markdown.extensions.sane_lists",
             PlantUMLMarkdownExtension(
-                server="http://www.plantuml.com/plantuml",
+                server="https://www.plantuml.com/plantuml",
                 cachedir=PLANTUML_CACHE,
                 base_dir=str(base_dir),
                 format="svg",

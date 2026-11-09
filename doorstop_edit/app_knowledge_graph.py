@@ -264,7 +264,7 @@ def build_app_knowledge_graph(
                     reviewed="reviewed" if reviewed else "needsReview",
                     loadState="loaded",
                 )
-            except (doorstop.DoorstopError, RuntimeError) as exc:
+            except (doorstop.DoorstopError, AttributeError, RuntimeError) as exc:
                 add_node(
                     iid,
                     "Item",

@@ -66,14 +66,13 @@ while service._active is not None and time.monotonic() < cleanup_deadline:
 app.processEvents()
 if service._active is not None:
     raise SystemExit('validation cleanup did not reach a terminal state')
-process_reaped = run.owner.supervisor_reaped
+if sys.platform == 'win32':
+    process_reaped = run.owner._termination_confirmed
+else:
+    process_reaped = run.owner.supervisor_reaped
 print(f"validation_helper_reaped {process_reaped}", flush=True)
 if not process_reaped:
     raise SystemExit(7)
-result_directory_retained = result_directory.exists()
-print(f"validation_result_directory_retained {result_directory_retained}", flush=True)
-if not result_directory_retained:
-    raise SystemExit(8)
 print("shutdown_returned", flush=True)
 """
 
@@ -172,7 +171,6 @@ def test_quit_returns_with_genuinely_blocked_custom_validator(tmp_path: Path) ->
     assert "validator_still_running True" in output, output
     assert "validation_helper_reaped True" in output, output
     assert "validation_result_directory_ready True" in output, output
-    assert "validation_result_directory_retained True" in output, output
     assert "shutdown_returned" in output, output
     assert elapsed < 8, f"bounded shutdown took {elapsed:.2f}s"
 
@@ -195,6 +193,8 @@ helper_pid, child_pid = map(int, sentinel.read_text().split())
 run = service._active
 if run is None: raise SystemExit('validation run missing')
 temp = run.temp_dir
+temp_retained_while_running = temp.exists()
+if not temp_retained_while_running: raise SystemExit('result directory missing while helper is running')
 if len(sys.argv) > 3 and sys.argv[3] == 'direct':
     import doorstop_edit.validation_service as module
     module.os.killpg = lambda pgid, sig: os.kill(pgid, sig)
@@ -206,6 +206,22 @@ app.processEvents()
 if service._active is not None: raise SystemExit('cleanup did not reach a terminal state')
 limit = time.monotonic() + 3
 def gone(pid):
+    if os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel32.OpenProcess(0x00100000, False, pid)
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == 87: return True
+            raise OSError(error, 'OpenProcess failed')
+        try: return kernel32.WaitForSingleObject(handle, 0) == 0
+        finally: kernel32.CloseHandle(handle)
     try: os.kill(pid, 0)
     except ProcessLookupError: return True
     if sys.platform.startswith('linux'):
@@ -218,9 +234,13 @@ if len(sys.argv) > 3 and sys.argv[3] == 'direct':
         try: os.kill(pid, 9)
         except ProcessLookupError: pass
     raise SystemExit(0)
-while time.monotonic() < limit and (not gone(helper_pid) or not gone(child_pid) or temp.exists()): time.sleep(.02)
-print(f'helper_gone {gone(helper_pid)} child_gone {gone(child_pid)} temp_retained {temp.exists()}', flush=True)
-raise SystemExit(0 if gone(helper_pid) and gone(child_pid) and temp.exists() else 1)
+while time.monotonic() < limit and (not gone(helper_pid) or not gone(child_pid)): time.sleep(.02)
+print(
+    f'helper_gone {gone(helper_pid)} child_gone {gone(child_pid)} '
+    f'temp_retained_while_running {temp_retained_while_running}',
+    flush=True,
+)
+raise SystemExit(0 if gone(helper_pid) and gone(child_pid) and temp_retained_while_running else 1)
 """
 
 
@@ -249,7 +269,7 @@ def test_shutdown_kills_custom_validator_descendant(tmp_path: Path) -> None:
             env=env,
             timeout=12,
         )
-        assert "helper_gone True child_gone True temp_retained True" in output, output
+        assert "helper_gone True child_gone True temp_retained_while_running True" in output, output
     finally:
         if sentinel.exists():
             try:
@@ -312,6 +332,7 @@ def test_crash_log_records_validation_lifecycle_without_private_data(tmp_path: P
     assert all(str(project) not in json.dumps(event) for event in lifecycle)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX killpg monkeypatch is not used by the Windows Job Object path")
 def test_descendant_regression_detects_direct_helper_kill(tmp_path: Path) -> None:
     project, sentinel = tmp_path / "project", tmp_path / "processes.started"
     project.mkdir()

@@ -39,6 +39,8 @@ Item {
     WebEngineView {
         id: web
         objectName: "renderWebView"
+        activeFocusOnTab: true
+        Accessible.name: qsTr("Document preview")
         anchors.fill: parent
         anchors.topMargin: controls.height + 6
         webChannel: channel
@@ -68,7 +70,7 @@ Item {
         onFindTextFinished: function(result) {
             preview.searchMatches = result.numberOfMatches
             preview.searchActiveMatch = result.activeMatch
-            preview.searchStatus = searchField.text && result.numberOfMatches === 0 ? "No matches" : ""
+            preview.searchStatus = searchField.text && result.numberOfMatches === 0 ? qsTr("No matches") : ""
         }
         onNewWindowRequested: function(request) {
             // target=_blank must not create an unmanaged browser window either.
@@ -81,28 +83,28 @@ Item {
         anchors.right: parent.right
         height: 40
         spacing: 8
-        Label { text: "Mode"; Accessible.name: "Preview mode" }
+        Label { text: qsTr("Mode"); Accessible.name: qsTr("Preview mode") }
         ComboBox {
             id: modePicker
             objectName: "renderModePicker"
             Layout.preferredWidth: 132
-            model: ["Document", "Section", "Item"]
-            Accessible.name: "Preview mode"
+            model: [qsTr("Document"), qsTr("Section"), qsTr("Item")]
+            Accessible.name: qsTr("Preview mode")
             onActivated: if (preview.renderBridge) preview.renderBridge.setViewMode(["document", "section", "item"][currentIndex])
             Component.onCompleted: if (preview.renderBridge) currentIndex = ["document", "section", "item"].indexOf(preview.renderBridge.viewMode)
         }
         Button {
             objectName: "renderReloadButton"
-            text: "Reload"
-            Accessible.name: "Reload preview"
+            text: qsTr("Reload")
+            Accessible.name: qsTr("Reload preview")
             onClicked: if (preview.renderBridge) preview.renderBridge.reload()
         }
         TextField {
             id: searchField
             objectName: "renderSearchField"
             Layout.preferredWidth: Math.min(170, Math.max(85, preview.width * 0.22))
-            placeholderText: "Find in preview"
-            Accessible.name: "Find text in preview"
+            placeholderText: qsTr("Find in preview")
+            Accessible.name: qsTr("Find text in preview")
             onTextChanged: {
                 preview.searchStatus = ""
                 web.findText(text)
@@ -122,7 +124,7 @@ Item {
             from: 0; to: 100
             value: preview.renderBridge ? preview.renderBridge.progress : 0
             visible: !!preview.renderBridge && preview.renderBridge.running
-            Accessible.name: "Preview rendering, " + Math.round(value) + " percent"
+            Accessible.name: qsTr("Preview rendering, %1 percent").arg(Math.round(value))
         }
     }
     Rectangle {

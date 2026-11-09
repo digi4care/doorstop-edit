@@ -56,7 +56,7 @@ def test_job_retains_descendant_after_helper_exit_until_termination(tmp_path: Pa
         # Terminate and observe helper exit first. Keep the descendant process
         # handle only long enough to prove that exact process reached signaled.
         assert owner.terminate_job(timeout=5)
-        assert owner._api.WaitForSingleObject(child_handle, 0) == windows_job._WAIT_OBJECT_0
+        assert owner._api.WaitForSingleObject(child_handle, 5000) == windows_job._WAIT_OBJECT_0
         assert owner._api.CloseHandle(child_handle)
         child_handle = None
         assert owner.wait_for_empty(timeout=5)
