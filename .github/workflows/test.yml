@@ -99,7 +99,7 @@ jobs:
 
       - name: Run tests (Ubuntu)
         if: ${{ matrix.os == 'Ubuntu' }}
-        run: xvfb-run uv run --no-sync pytest -vv -ra --color=yes --cov=doorstop_edit --cov-report=xml
+        run: xvfb-run uv run --no-sync pytest -vv -ra --setup-show -o faulthandler_timeout=120 --color=yes --cov=doorstop_edit --cov-report=xml
 
       - name: Run tests (other)
         if: ${{ matrix.os != 'Ubuntu' }}
