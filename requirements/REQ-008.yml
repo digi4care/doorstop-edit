@@ -1,6 +1,9 @@
 active: true
 derived: false
-evidence: []
+evidence:
+- ../doorstop_edit/test/test_req008_watcher_coalescing.py#test_watcher_coalesces_same_file_events_within_quiet_period
+- ../doorstop_edit/test/test_req008_watcher_coalescing.py#test_watcher_delivers_distinct_content_change_filenames
+- ../doorstop_edit/test/test_req008_watcher_coalescing.py#test_watcher_structural_refresh_takes_precedence_in_mixed_batch
 header: ''
 level: 8.0
 links: []
@@ -15,4 +18,4 @@ reviewed: VQMOb_KsbkZI8UruGDdvhF_ePwFIAwbhd3w_UIwb8Bk=
 source: ../docs/file-watcher.md#event-delivery
 text: |
   The watcher must coalesce events within a 100 ms quiet period and deliver distinct content-change filenames, with a structural refresh taking precedence for mixed batches.
-verified: false
+verified: true

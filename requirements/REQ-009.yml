@@ -1,5 +1,7 @@
 active: true
 derived: false
+evidence:
+- ../doorstop_edit/test/test_req009_isolated_application_run.py#test_isolated_test_application_run_exits_zero
 header: |
   Normale afsluiting van een geïsoleerde testsessie
 level: 8.1
@@ -16,4 +18,4 @@ text: |
 
   This requirement records the expected outcome for the existing investigation
   `doorstop-edit-7cc`; it does not claim that the cause or a fix is known.
-verified: false
+verified: true

@@ -1,6 +1,8 @@
 active: true
 derived: false
-evidence: []
+evidence:
+- ../doorstop_edit/test/test_req004_validation_never_blocks_save.py#test_validation_findings_do_not_block_save
+- ../doorstop_edit/test/test_req004_validation_never_blocks_save.py#test_validation_findings_do_not_block_edit
 header: ''
 level: 4.0
 links: []
@@ -15,4 +17,4 @@ reviewed: 8E0B7ReWKzAxtAFn8xr4sc_YHG0pTzeFUuVPED2J40U=
 source: ../docs/validation-policy.md#mvp-3-feedback
 text: |
   Validation findings must never prevent saving or editing.
-verified: false
+verified: true

@@ -23,19 +23,37 @@ def test_broken_native_reference_path_fails() -> None:
     assert native_reference_errors("REQ-X", [{"type": "file", "path": "docs/missing.md"}])
 
 
-def test_uncovered_requirements_are_reported_without_failure() -> None:
-    root = Path(__file__).resolve().parents[2]
-    import subprocess
-
-    result = subprocess.run(
-        ["uv", "run", "python", str(root / "tools/check_requirements.py")],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=False,
+def test_uncovered_requirements_are_reported_without_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An uncovered requirement is reported on stdout but must not fail the checker."""
+    requirements = tmp_path / "requirements"
+    document = requirements / "REQ"
+    document.mkdir(parents=True)
+    (document / ".doorstop.yml").write_text(
+        "settings:\n  digits: 3\n  itemformat: yaml\n  prefix: REQ\n  sep: '-'\n",
+        encoding="utf-8",
     )
-    assert result.returncode == 0
-    assert "UNCOVERED/UNTESTABLE REQ-004" in result.stdout
+    (document / "REQ-001.yml").write_text(
+        "active: true\n"
+        "derived: false\n"
+        "header: Example\n"
+        "level: 1.0\n"
+        "links: []\n"
+        "normative: true\n"
+        "ref: ''\n"
+        "references: []\n"
+        "source: ../docs/policy.md#decision\n"
+        "text: An uncovered requirement.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/policy.md").write_text("# Decision\n", encoding="utf-8")
+
+    monkeypatch.setattr(checker, "ROOT", tmp_path)
+    monkeypatch.setattr(checker, "TREE", requirements)
+    assert checker.main() == 0
+    assert "UNCOVERED/UNTESTABLE REQ-001" in capsys.readouterr().out
 
 
 def test_checker_ignores_nested_doorstop_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
