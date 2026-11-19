@@ -1,16 +1,37 @@
 import functools
+import html
+import json
 import logging
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import uuid
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import doorstop
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QAction, QGuiApplication
-from PySide6.QtWidgets import QApplication, QDialog, QDockWidget, QFileDialog
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QDockWidget,
+    QFileDialog,
+    QMessageBox,
+    QPlainTextEdit,
+    QVBoxLayout,
+)
 
 from doorstop_edit.app_signals import AppSignals
 from doorstop_edit.dialogs import ConfirmDialog, InfoDialog, SettingDialog
-from doorstop_edit.doorstop_data import DoorstopData
+from doorstop_edit.document_dialog import AddDocumentDialog
+from doorstop_edit.doorstop_data import (
+    DocumentRemovalRefreshError,
+    DoorstopData,
+    ValidationFinding,
+)
 from doorstop_edit.item_edit.item_edit_view import ItemEditView
 from doorstop_edit.item_render.item_render_view import ItemRenderView
 from doorstop_edit.item_tree.item_tree_view import ItemTreeView
@@ -22,6 +43,9 @@ from doorstop_edit.ui_gen.ui_item_viewer import Ui_ItemViewer
 from doorstop_edit.utils.version_summary import create_version_summary
 
 logger = logging.getLogger("gui")
+
+
+MAX_VALIDATION_RESULT_BYTES = 4 * 1024 * 1024
 
 
 class DoorstopEdit(AppSignals):
@@ -42,6 +66,32 @@ class DoorstopEdit(AppSignals):
 
         self.doorstop_data = DoorstopData(self.window, root)
         self.doorstop_data.tree_changed.connect(self._on_tree_changed)
+        self.doorstop_data.item_saved.connect(self._request_validation)
+        self._validation_running = False
+        self._validation_requested = False
+        self._validation_revision = 0
+        self._validation_root: Optional[Path] = None
+        self._validation_process: Optional[subprocess.Popen[bytes]] = None
+        self._validation_job: Optional[tuple[str, Path, int, Path]] = None
+        self._validation_temp: Optional[Path] = None
+        self._validation_timer = QTimer(self.window)
+        self._validation_timer.setInterval(50)
+        self._validation_timer.timeout.connect(self._poll_validation_process)
+        self._shutting_down = False
+        self.validation_action = self.window.ui.menu_action_validate_project
+        self.validation_action.setToolTip("Check all documents and items")
+        self.validation_action.triggered.connect(self._request_validation)
+        self.validation_status = self.window.ui.validation_status
+        self.validation_status.setText("Validation not run")
+        self.validation_status.setToolTip("Open project validation results")
+        self.validation_dialog = QPlainTextEdit()
+        self.validation_dialog.setReadOnly(True)
+        self.validation_results_dialog = QDialog(self.window)
+        self.validation_results_dialog.setWindowTitle("Project validation")
+        self.validation_results_dialog.resize(620, 420)
+        layout = QVBoxLayout(self.validation_results_dialog)
+        layout.addWidget(self.validation_dialog)
+        self.validation_status.clicked.connect(self.validation_results_dialog.show)
         self.setting_dialog = SettingDialog(self.window)
         self.setting_dialog.on_theme_changed.connect(lambda window=self.window: window.update_theme())
 
@@ -76,6 +126,8 @@ class DoorstopEdit(AppSignals):
         self.pinned_items_view = PinnedItemsView(self, self.doorstop_data, self.window.ui.pinned_items_list)
         self.item_edit_view = ItemEditView(self, self.window.ui, self.doorstop_data)
         self.window.ui.tree_combo_box.currentIndexChanged.connect(self._on_selected_document_change)
+        self.window.ui.add_document_button.clicked.connect(self._on_add_document_clicked)
+        self.window.ui.remove_document_button.clicked.connect(self._on_remove_document_clicked)
         self.window.ui.view_items_mode.currentTextChanged.connect(self._on_view_mode_changed)
         self.window.ui.doc_review_tool_button.clicked.connect(self._on_doc_review_all_button_clicked)
         self.window.ui.doc_clear_links_tool_button.clicked.connect(self._on_doc_clear_all_links_button_clicked)
@@ -83,6 +135,7 @@ class DoorstopEdit(AppSignals):
         self.window.ui.renderer_search_box.textChanged.connect(self._on_renderer_search_box_text_changed)
         self.window.ui.renderer_search_box.returnPressed.connect(self._on_renderer_search_box_return_pressed)
         self.selected_document: Optional[doorstop.Document] = None
+        self._suppress_empty_notice = False
         # Adjust docks width to a sane default (designer seem to not support it).
         self.window.resizeDocks(
             [self.window.ui.item_tree_dock_widget, self.window.ui.edit_item_dock_widget],
@@ -111,13 +164,51 @@ class DoorstopEdit(AppSignals):
     def quit(self) -> None:
         """Tear down resources that needs to be teared down before exit."""
         logger.debug("Quitting...")
+        self._shutting_down = True
+        self._validation_requested = False
         self.doorstop_data.stop()
+        process = self._validation_process
+        self._validation_timer.stop()
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                logger.exception("Could not kill validation helper")
+            try:
+                process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                logger.error("Validation helper did not stop within shutdown bound; deferring artifact cleanup")
+                self._defer_validation_reap(process, self._validation_temp)
+                self._validation_process = None
+                self._validation_job = None
+                self._validation_temp = None
+            else:
+                self._validation_process = None
+                self._cleanup_validation_result()
+        else:
+            self._validation_process = None
+            self._cleanup_validation_result()
         self.item_render_view.destroy()
         self.window.close()
 
-    def _update_document_list(self) -> None:
+    @staticmethod
+    def _defer_validation_reap(process: subprocess.Popen[bytes], result_directory: Optional[Path]) -> None:
+        def reap() -> None:
+            try:
+                process.wait()
+            except OSError:
+                logger.exception("Could not reap timed-out validation helper; retaining its result artifacts")
+                return
+            if result_directory is not None:
+                shutil.rmtree(result_directory, ignore_errors=True)
 
-        self.window.ui.tree_combo_box.clear()
+        threading.Thread(target=reap, name="validation-reaper", daemon=True).start()
+
+    def _update_document_list(self) -> None:
+        combo = self.window.ui.tree_combo_box
+        previous_prefix = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
         for i, (name, doc) in enumerate(self.doorstop_data.get_documents().items()):
             parent = self.doorstop_data.find_document(doc.parent)
             if parent is None:
@@ -125,21 +216,29 @@ class DoorstopEdit(AppSignals):
             else:
                 parent_text = f" (-> {parent.prefix})"
             text = name + parent_text
-            self.window.ui.tree_combo_box.addItem(text, name)
-            self.window.ui.tree_combo_box.setItemData(i, doc.path, Qt.ItemDataRole.ToolTipRole)
-            if i == 0:
-                self.window.ui.tree_combo_box.setToolTip(doc.path)
+            combo.addItem(text, name)
+            combo.setItemData(i, doc.path, Qt.ItemDataRole.ToolTipRole)
+        index = combo.findData(previous_prefix)
+        combo.setCurrentIndex(index if index >= 0 else (0 if combo.count() else -1))
+        combo.blockSignals(False)
+        self._on_selected_document_change(combo.currentIndex())
 
     def _update_item_tree(self, document: Optional[doorstop.Document]) -> None:
         self.tree_view.update(document.prefix if document else None)
 
     def _update_used_document(self, document: Optional[doorstop.Document]) -> None:
         """Reload or change used/selected document."""
+        old_prefix = self.selected_document.prefix if self.selected_document else None
         self.selected_document = document
+        self.window.ui.add_document_button.setEnabled(self.doorstop_data.has_root())
+        self.window.ui.remove_document_button.setEnabled(document is not None)
+        if old_prefix != (document.prefix if document else None):
+            self.item_edit_view.update_item(None)
+            self.item_render_view.show(None)
         self._update_item_tree(document)
 
     def _open_item_in_current_document(self, item_uid: str) -> None:
-        if not self.selected_document:
+        if self.doorstop_data.tree_stale or not self.selected_document:
             return
 
         logger.debug("Open item with uid %s", item_uid)
@@ -148,16 +247,21 @@ class DoorstopEdit(AppSignals):
             item = self.doorstop_data.find_item(item_uid, self.selected_document)
             if item is None:
                 return
+            if self.doorstop_data.get_item_load_error(item_uid) is not None:
+                self.item_edit_view.update_item(None)
+                self.item_render_view.show(None)
+                return
             item.load(reload=True)  # In case change on disk.
             self.item_render_view.show(item)
             self.item_edit_view.update_item(item)
-        except doorstop.DoorstopError as e:
+        except (doorstop.DoorstopError, ValueError, AttributeError) as e:
             logger.error(e)
             return
 
     @Slot(int)
     def _on_selected_document_change(self, index: int) -> None:
         if index == -1:
+            self.window.ui.tree_combo_box.setToolTip("")
             self._update_used_document(None)
             return
 
@@ -171,9 +275,67 @@ class DoorstopEdit(AppSignals):
 
         doc = self.doorstop_data.find_document(doc_uid)
         if doc is None:
+            self._update_used_document(None)
             return
 
         self._update_used_document(doc)
+
+    def _on_add_document_clicked(self) -> None:
+        if not self.doorstop_data.has_root():
+            return
+        dialog = AddDocumentDialog(
+            self.window,
+            self.doorstop_data.get_documents(),
+            self.selected_document.prefix if self.selected_document else None,
+            self.doorstop_data.create_document,
+            allow_top_level=not any(doc.parent is None for doc in self.doorstop_data.get_documents().values()),
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.created_prefix is not None:
+            index = self.window.ui.tree_combo_box.findData(dialog.created_prefix)
+            if index >= 0:
+                self.window.ui.tree_combo_box.setCurrentIndex(index)
+
+    def _on_remove_document_clicked(self) -> None:
+        if self.selected_document is None:
+            return
+        prefix = self.selected_document.prefix
+        children = sorted(doc.prefix for doc in self.doorstop_data.get_documents().values() if doc.parent == prefix)
+        if children:
+            InfoDialog.inform(
+                self.window,
+                "Cannot remove document",
+                "Remove the child documents first: " + ", ".join(html.escape(x) for x in children),
+            )
+            return
+        if not ConfirmDialog.ask(self.window, f"Remove document {prefix} and its items? This cannot be undone."):
+            return
+        try:
+            self._suppress_empty_notice = True
+            self.doorstop_data.remove_document(prefix)
+        except DocumentRemovalRefreshError as exc:
+            self._mark_document_tree_stale()
+            QMessageBox.warning(
+                self.window,
+                "Document deletion may be partial",
+                f"{exc}\nThe displayed document tree may be stale. Reopen or reload the project before editing.",
+            )
+        except (doorstop.DoorstopError, OSError) as exc:
+            QMessageBox.warning(
+                self.window,
+                "Could not remove document",
+                f"Could not remove document {prefix}: {exc}",
+            )
+        finally:
+            self._suppress_empty_notice = False
+
+    def _mark_document_tree_stale(self) -> None:
+        """Disable editing against a preserved but potentially stale Doorstop tree."""
+        self.window.ui.tree_combo_box.setEnabled(False)
+        self.window.ui.add_document_button.setEnabled(False)
+        self.window.ui.remove_document_button.setEnabled(False)
+        self.item_edit_view.update_item(None)
+        self.item_render_view.show(None)
+        self._update_item_tree(None)
 
     def _on_view_mode_changed(self, new_mode: str) -> None:
         if new_mode == "Document":
@@ -185,12 +347,14 @@ class DoorstopEdit(AppSignals):
 
     @Slot(doorstop.Item)
     def _on_item_changed(self, item: doorstop.Item) -> None:
+        if self.doorstop_data.tree_stale:
+            return
         self.item_render_view.show(item)
         self.tree_view.update_selected_items([item])
 
     @Slot(str)
     def _on_add_item(self, after_item_uid: Optional[str]) -> None:
-        if self.selected_document is None:
+        if self.doorstop_data.tree_stale or self.selected_document is None:
             return
 
         level = None
@@ -259,6 +423,8 @@ class DoorstopEdit(AppSignals):
         w.setWindowTitle(f"[{item.uid}] {item.header}")
 
     def _on_doc_review_all_button_clicked(self) -> None:
+        if self.doorstop_data.tree_stale:
+            return
         if not ConfirmDialog.ask(
             self.window,
             """\
@@ -280,6 +446,8 @@ WARNING: This operation cannot be undone!
         self.item_edit_view.update_item(None)
 
     def _on_doc_clear_all_links_button_clicked(self) -> None:
+        if self.doorstop_data.tree_stale:
+            return
         if not ConfirmDialog.ask(
             self.window,
             """\
@@ -301,6 +469,8 @@ WARNING: This operation cannot be undone!
         self.item_edit_view.update_item(None)
 
     def _on_doc_reoder_all_button_clicked(self) -> None:
+        if self.doorstop_data.tree_stale:
+            return
         if not ConfirmDialog.ask(
             self.window,
             """\
@@ -324,15 +494,157 @@ WARNING: This operation cannot be undone!
 
     @Slot(bool)
     def _on_tree_changed(self, modified_only: bool) -> None:
-        if self.doorstop_data.has_root() and len(self.doorstop_data.get_documents()) == 0:
+        if not self.doorstop_data.tree_stale:
+            self.window.ui.tree_combo_box.setEnabled(True)
+        if (
+            not self._suppress_empty_notice
+            and self.doorstop_data.has_root()
+            and len(self.doorstop_data.get_documents()) == 0
+        ):
             msg = "No doorstop documents found in project root."
             InfoDialog.inform(self.window, "Empty project", msg)
 
         if not modified_only:
             self._update_document_list()
-        if self.selected_document:
+        elif self.selected_document:
             self._update_item_tree(self.selected_document)
+        edited_item = self.item_edit_view.item
+        if edited_item is not None and self.doorstop_data.get_item_load_error(str(edited_item.uid)) is not None:
+            self.item_edit_view.update_item(None)
+            self.item_render_view.show(None)
         self.item_edit_view.reload()
+        self._request_validation()
+
+    def _request_validation(self) -> None:
+        if self._shutting_down:
+            return
+        if not self.doorstop_data.has_root():
+            return
+        if self._validation_root != self.doorstop_data.root:
+            self._validation_root = self.doorstop_data.root
+            self.tree_view.set_validation_findings([])
+            self.validation_dialog.setPlainText("Checking the opened project…")
+        self._validation_revision += 1
+        if self._validation_running:
+            self._validation_requested = True
+            return
+        self._start_validation()
+
+    def _start_validation(self) -> None:
+        root = self.doorstop_data.root
+        if root is None:
+            return
+        self._validation_running = True
+        self._validation_requested = False
+        self._validation_result_received = False
+        revision = self._validation_revision
+        self.validation_status.setText("Checking project…")
+        job_id = uuid.uuid4().hex
+        directory = Path(tempfile.mkdtemp(prefix="doorstop-validation-"))
+        result_path = directory / "result.json"
+        self._validation_job = (job_id, root.resolve(), revision, result_path)
+        self._validation_temp = directory
+        try:
+            self._validation_process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "doorstop_edit.validation_helper",
+                    str(root.resolve()),
+                    str(revision),
+                    job_id,
+                    str(result_path),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            self._on_validation_result(revision, None, str(exc))
+            self._validation_running = False
+            self._cleanup_validation_result()
+            if not self._shutting_down and self._validation_requested:
+                self._start_validation()
+            return
+        self._validation_timer.start()
+
+    def _cleanup_validation_result(self) -> None:
+        process = self._validation_process
+        if process is not None and process.poll() is None:
+            return
+        if self._validation_temp is not None:
+            shutil.rmtree(self._validation_temp, ignore_errors=True)
+        self._validation_temp = None
+        self._validation_job = None
+
+    @Slot()
+    def _poll_validation_process(self) -> None:
+        process = self._validation_process
+        if process is None:
+            self._validation_timer.stop()
+            return
+        return_code = process.poll()
+        if return_code is not None:
+            self._validation_timer.stop()
+            self._process_validation_completion(process, return_code)
+
+    def _process_validation_completion(self, process: subprocess.Popen[bytes], return_code: int) -> None:
+        if process is not self._validation_process:
+            return
+        job = self._validation_job
+        if not self._shutting_down:
+            try:
+                if return_code != 0 or job is None:
+                    raise ValueError("Validation helper exited unexpectedly")
+                job_id, root, revision, path = job
+                if not path.is_file() or path.stat().st_size > MAX_VALIDATION_RESULT_BYTES:
+                    raise ValueError("Validation helper returned no valid result")
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if data.get("job_id") != job_id or data.get("revision") != revision or data.get("root") != str(root):
+                    raise ValueError("Validation result identity mismatch")
+                if "error" in data:
+                    self._on_validation_result(revision, None, str(data["error"]))
+                else:
+                    findings = [ValidationFinding(**item) for item in data["findings"]]
+                    self._on_validation_result(revision, findings, None)
+            except Exception as exc:
+                failed_revision = job[2] if job is not None else self._validation_revision
+                self._on_validation_result(failed_revision, None, str(exc))
+            if not self._validation_result_received:
+                self.validation_status.setText("Validation could not complete")
+                self.validation_dialog.setPlainText("Project validation could not complete. See the application log.")
+        self._finish_validation_process()
+
+    def _finish_validation_process(self) -> None:
+        self._validation_process = None
+        self._validation_running = False
+        self._cleanup_validation_result()
+        if not self._shutting_down and self._validation_requested:
+            self._start_validation()
+
+    @Slot(int, object, object)
+    def _on_validation_result(
+        self, revision: int, findings: Optional[List[ValidationFinding]], error: Optional[str]
+    ) -> None:
+        self._validation_result_received = True
+        if revision != self._validation_revision:
+            return
+        if error is not None:
+            self.validation_status.setText("Validation could not complete")
+            self.validation_dialog.setPlainText(f"Project validation could not complete:\n{error}")
+            return
+        assert findings is not None
+        self.tree_view.set_validation_findings(findings)
+        errors = sum(f.severity == "error" for f in findings)
+        warnings = sum(f.severity == "warning" for f in findings)
+        info = sum(f.severity == "info" for f in findings)
+        self.validation_status.setText(
+            f"Validation · {errors} error{'s' if errors != 1 else ''} · "
+            f"{warnings} warning{'s' if warnings != 1 else ''} · {info} notice{'s' if info != 1 else ''}"
+        )
+        self.validation_dialog.setPlainText(
+            "\n".join(f"{f.severity.upper()} · {f.item_uid or 'Project'} · {f.message}" for f in findings)
+            or "No validation findings."
+        )
 
     @Slot(int)
     def _update_render_progress(self, percentage: int) -> None:
@@ -374,6 +686,10 @@ WARNING: This operation cannot be undone!
 
     def _rebuild_root(self, new_root: Optional[Path] = None) -> None:
         try:
+            if new_root is not None and self.doorstop_data.root != new_root:
+                self.item_edit_view.cancel_pending_save()
+                self.item_edit_view.update_item(None)
+                self.item_render_view.show(None)
             self.doorstop_data.rebuild(only_reload=False, new_root=new_root)
             # Save as last opened if rebuild succeeded. Will be default after next restart.
             self.settings.last_open_folder = str(self.doorstop_data.root)

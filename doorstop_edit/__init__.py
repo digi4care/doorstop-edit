@@ -1,8 +1,8 @@
-from pkg_resources import DistributionNotFound, get_distribution
+from importlib.metadata import PackageNotFoundError, version
 
 __project__ = "doorstop-edit"
 
 try:
-    __version__ = get_distribution(__project__).version
-except DistributionNotFound:
+    __version__ = version(__project__)
+except PackageNotFoundError:
     __version__ = "(local)"

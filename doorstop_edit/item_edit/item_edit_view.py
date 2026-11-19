@@ -294,12 +294,16 @@ class ItemEditView:
 
     @time_function("Updating item in edit view")
     def update_item(self, item: Optional[doorstop.Item]) -> None:
+        self.cancel_pending_save()
         self.item = item
 
         if self.item is not None:
             self._parse_extended_attributes(self.item)
 
         self._update_view()
+
+    def cancel_pending_save(self) -> None:
+        self._save_timer.stop()
 
     def _connect_field(self, field: Field) -> None:
         if isinstance(field.widget, QLineEdit):
@@ -415,6 +419,7 @@ class ItemEditView:
         self._disable_save = True
         try:
             if self.item is None:
+                self.ui.item_edit_uid.clear()
                 self._enable(False)
                 return
 

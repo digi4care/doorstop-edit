@@ -13,6 +13,16 @@ NUM_DOC = 3
 NUM_ITEMS_PER_DOC = 30
 
 
+@pytest.fixture(scope="session", autouse=True)
+def isolate_user_qsettings(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Keep the session-scoped GUI fixture away from the developer's persisted window state."""
+    from PySide6.QtCore import QSettings
+
+    settings_path = tmp_path_factory.mktemp("doorstop-settings")
+    QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, str(settings_path))
+    yield
+
+
 @pytest.fixture(scope="session")
 def tree_root() -> Iterator[Path]:
     with tempfile.TemporaryDirectory() as temp_dir:
