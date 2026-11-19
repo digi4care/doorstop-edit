@@ -1,8 +1,9 @@
 active: true
 derived: false
 evidence:
-- |
-  ../doorstop_edit/test/test_application.py#test_validation_action_and_tree_feedback
+- ../doorstop_edit/test/test_application.py#test_open_project_with_malformed_item_shows_error_marker
+- ../doorstop_edit/test/test_application.py#test_successful_item_save_requests_validation
+- ../doorstop_edit/test/test_application.py#test_validation_action_requests_validation
 header: ''
 level: 1.0
 links: []
@@ -11,7 +12,7 @@ ref: ''
 references:
 - path: docs/validation-policy.md
   type: file
-reviewed: oqUASDvfiVNlYUTMnGowDqSeGHP3j4YCSS4E7TN4rdU=
+reviewed: PmT5X5-bkLlKLZ0s_aQ7wY5UtWS0Qgxw5cl3cyFOHTE=
 source: ../docs/validation-policy.md#decision
 text: |
   The application must validate the whole project after tree loading, after each successful item save, and on explicit user request.
